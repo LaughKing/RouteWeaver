@@ -198,6 +198,16 @@ model = AutoModelForCausalLM.from_pretrained("e2rea1/RouteWeaver-4B", dtype="bfl
 tok = AutoTokenizer.from_pretrained("e2rea1/RouteWeaver-4B")
 ```
 
+The cost-aware variants are released separately in
+[`RouteWeaver-4B-cost`](https://huggingface.co/e2rea1/RouteWeaver-4B-cost), one
+subdirectory per efficiency weight (`alpha-0.1`, `alpha-0.3`, `alpha-0.5`),
+trained identically except for `COST_ALPHA`:
+
+```python
+model = AutoModelForCausalLM.from_pretrained(
+    "e2rea1/RouteWeaver-4B-cost", subfolder="alpha-0.3", dtype="bfloat16")
+```
+
 `scripts/eval.sh` takes a Hub snapshot directly, so the paper's protocol runs
 against the released weights:
 

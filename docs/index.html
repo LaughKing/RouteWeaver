@@ -191,7 +191,7 @@ input[type=range]{width:100%;accent-color:var(--agentic)}
 .fig figcaption{font-size:13.5px;color:var(--ink-3);margin-top:12px}
 pre{background:var(--card);border:1px solid var(--line);border-radius:11px;padding:15px 17px;
     overflow-x:auto;font-family:var(--mono);font-size:13px;line-height:1.55;margin:0}
-.res{display:grid;grid-template-columns:repeat(3,1fr);gap:13px}
+.res{display:grid;grid-template-columns:repeat(auto-fit,minmax(215px,1fr));gap:13px}
 @media (max-width:820px){.res{grid-template-columns:1fr}}
 .res a{display:block;background:var(--card);border:1px solid var(--line);border-radius:13px;
        padding:18px 19px;text-decoration:none;box-shadow:var(--shadow)}
@@ -504,7 +504,9 @@ footer p{font-size:14px;color:var(--ink-3);margin:0 0 6px}
       <p class="dial-delta" id="delta">The reported model: task reward only, no efficiency term.</p>
     </div>
     <p class="tnote">Cost is fixed-reference worker inference cost per query; at α = 0 it is
-    reconstructed from token usage. Accuracy at α = 0 is 61.4%; the deltas are relative to it.</p>
+    reconstructed from token usage. Accuracy at α = 0 is 61.4%; the deltas are relative to it.
+    The α &gt; 0 routers are released as
+    <a href="https://huggingface.co/e2rea1/RouteWeaver-4B-cost">RouteWeaver-4B-cost</a>.</p>
   </div>
 </section>
 
@@ -525,6 +527,9 @@ footer p{font-size:14px;color:var(--ink-3);margin:0 0 6px}
       </a>
       <a href="https://huggingface.co/datasets/e2rea1/RouteWeaver-data">
         <b>Datasets →</b><span>The exact training and evaluation sets, as verl prompt rows.</span>
+      </a>
+      <a href="https://huggingface.co/e2rea1/RouteWeaver-4B-cost">
+        <b>Cost variants →</b><span>The same router at &alpha; = 0.1, 0.3 and 0.5, one subdirectory each.</span>
       </a>
     </div>
     <h3 style="font-size:19px;margin:30px 0 12px">Reproduce the reported model</h3>
