@@ -1,0 +1,135 @@
+# Backend mapping for the six workers. The router never sees this file: it
+# emits worker_1 .. worker_6, and this is where those ids become endpoints.
+#
+# - A worker may list several candidate entries; order is priority.
+# - API keys are referenced by path, never inlined. Do not commit secrets.
+# - The real model ids are kept as extra keys at the bottom, so a run with
+#   ROUTEWEAVER_WORKER_ALIAS=0 dispatches through the same entries.
+#
+# worker_1 and worker_2 are served locally (vLLM, OpenAI-compatible); the rest
+# go through OpenRouter with the provider pinned, so a worker's backend cannot
+# silently change between runs. Replace the base_url / model / auth of an entry
+# to point a worker somewhere else.
+_openrouter:
+  base_url: https://openrouter.ai/api/v1/chat/completions
+  auth: &id001
+    type: single_key_file
+    path: ~/.secrets/routeweaver/openrouter.key
+  timeout: 180
+  spend_stop_file: ~/.secrets/routeweaver/openrouter.STOP
+  enabled: true
+channels:
+  local_vllm_qwen3_8b:
+    base_url: http://127.0.0.1:8012/v1/chat/completions
+    auth:
+      type: none
+    timeout: 120
+    enabled: true
+  local_vllm_llama31_8b:
+    base_url: http://127.0.0.1:8010/v1/chat/completions
+    auth:
+      type: none
+    timeout: 120
+    enabled: true
+  openrouter_qwen3_30b_a3b:
+    base_url: https://openrouter.ai/api/v1/chat/completions
+    auth: *id001
+    timeout: 180
+    spend_stop_file: ~/.secrets/routeweaver/openrouter.STOP
+    enabled: true
+  openrouter_gemma3_27b_it:
+    base_url: https://openrouter.ai/api/v1/chat/completions
+    auth: *id001
+    timeout: 180
+    spend_stop_file: ~/.secrets/routeweaver/openrouter.STOP
+    enabled: true
+  openrouter_llama33_70b:
+    base_url: https://openrouter.ai/api/v1/chat/completions
+    auth: *id001
+    timeout: 180
+    spend_stop_file: ~/.secrets/routeweaver/openrouter.STOP
+    enabled: true
+  openrouter_gemini25_flash_lite:
+    base_url: https://openrouter.ai/api/v1/chat/completions
+    auth: *id001
+    timeout: 180
+    spend_stop_file: ~/.secrets/routeweaver/openrouter.STOP
+    enabled: true
+workers:
+  worker_1: &id002
+  - channel: local_vllm_qwen3_8b
+    model: qwen3-8b
+    max_tokens: 1024
+    temperature: 0.2
+    extra_body:
+      chat_template_kwargs:
+        enable_thinking: false
+  worker_2: &id003
+  - channel: local_vllm_llama31_8b
+    model: llama3.1-8b
+    max_tokens: 1024
+    temperature: 0.2
+  worker_3: &id004
+  - channel: openrouter_qwen3_30b_a3b
+    model: qwen/qwen3-30b-a3b-instruct-2507
+    max_tokens: 1536
+    temperature: 0.2
+    extra_body:
+      provider:
+        order:
+        - Nebius
+        allow_fallbacks: false
+        quantizations:
+        - fp8
+      reasoning:
+        enabled: false
+      usage:
+        include: true
+  worker_4: &id005
+  - channel: openrouter_gemma3_27b_it
+    model: google/gemma-3-27b-it
+    max_tokens: 1536
+    temperature: 0.2
+    extra_body:
+      provider:
+        order:
+        - Novita
+        allow_fallbacks: false
+      reasoning:
+        enabled: false
+      usage:
+        include: true
+  worker_5: &id006
+  - channel: openrouter_llama33_70b
+    model: meta-llama/llama-3.3-70b-instruct
+    max_tokens: 1536
+    temperature: 0.2
+    extra_body:
+      provider:
+        order:
+        - CoreWeave
+        allow_fallbacks: false
+      reasoning:
+        enabled: false
+      usage:
+        include: true
+  worker_6: &id007
+  - channel: openrouter_gemini25_flash_lite
+    model: google/gemini-2.5-flash-lite
+    max_tokens: 1536
+    temperature: 0.2
+    extra_body:
+      provider:
+        order:
+        - Google AI Studio
+        allow_fallbacks: false
+      reasoning:
+        enabled: false
+      usage:
+        include: true
+  qwen3_8b: *id002
+  llama31_8b: *id003
+  qwen3_30b_a3b: *id004
+  gemma3_27b_it: *id005
+  llama33_70b: *id006
+  gemini25_flash_lite: *id007

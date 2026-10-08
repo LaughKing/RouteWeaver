@@ -1,0 +1,21 @@
+RouteWeaver
+Copyright 2026 Xiaohan Wang and the RouteWeaver authors
+
+This product includes software developed as a derivative of:
+
+  Router-R1 (https://github.com/ulab-uiuc/Router-R1)
+  Copyright 2025 ULAB, University of Illinois Urbana-Champaign
+  Licensed under the Apache License, Version 2.0.
+  The multi-round action space (routing/prompt_pool.py) and the answer scoring
+  it is rewarded by follow Router-R1's formulation; the surrounding training
+  stack is this work's.
+
+  verl (https://github.com/volcengine/verl)
+  Copyright 2023-2024 Bytedance Ltd. and/or its affiliates
+  Licensed under the Apache License, Version 2.0.
+  verl is a dependency installed from its official v0.8.0 tag and is not
+  modified or redistributed here. RouteWeaver attaches to it entirely through
+  import hooks in trainers/sitecustomize.py.
+
+The evaluation judges under evaluation/judges/ follow the official LiveCodeBench
+and APPS harnesses; the datasets themselves are not redistributed.

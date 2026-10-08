@@ -1,0 +1,38 @@
+{
+  "c_ref_usd": 0.007071665299999997,
+  "statistic": "P95 of per-trajectory worker cost",
+  "n_reference_rollouts": 1024,
+  "price_table_version": "fixed-reference-2026-09-20",
+  "prices": {
+    "worker_1": {
+      "model": "qwen3_8b",
+      "in": 0.02,
+      "out": 0.05
+    },
+    "worker_2": {
+      "model": "llama31_8b",
+      "in": 0.02,
+      "out": 0.05
+    },
+    "worker_3": {
+      "model": "qwen3_30b_a3b",
+      "in": 0.1,
+      "out": 0.3
+    },
+    "worker_4": {
+      "model": "gemma3_27b_it",
+      "in": 0.119,
+      "out": 0.2
+    },
+    "worker_5": {
+      "model": "llama33_70b",
+      "in": 0.1,
+      "out": 0.32
+    },
+    "worker_6": {
+      "model": "gemini25_flash_lite",
+      "in": 0.1,
+      "out": 0.4
+    }
+  }
+}

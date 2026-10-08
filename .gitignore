@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# API credentials. The channel configs point at ~/.secrets/routeweaver/ by
+# default; nothing secret belongs in the repo.
+.secrets/
+
+# The prepared datasets, fetched with data/hf_download.py.
+datasets/
+
+# Run artifacts: checkpoints, HF exports, evaluation dumps, logs.
+outputs/
+logs/
+wandb/
