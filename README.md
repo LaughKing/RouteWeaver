@@ -5,6 +5,7 @@
 <h1 align="center">RouteWeaver: Weaving Mode Selection and Execution into Unified LLM Routing</h1>
 
 <p align="center">
+  <a href="https://laughking.github.io/RouteWeaver/"><img src="https://img.shields.io/badge/Project_Page-RouteWeaver-3F6FD8?style=for-the-badge&logo=githubpages&logoColor=white" alt="Project page"></a>
   <a href="#"><img src="https://img.shields.io/badge/arXiv-coming_soon-B31B1B?style=for-the-badge&logo=arxiv&logoColor=white" alt="arXiv: coming soon"></a>
   <a href="https://huggingface.co/e2rea1/RouteWeaver-4B"><img src="https://img.shields.io/badge/HuggingFace-Model-FFD21E?style=for-the-badge&logo=huggingface&logoColor=FFD21E" alt="HuggingFace Model"></a>
   <a href="https://github.com/LaughKing/RouteWeaver/stargazers"><img src="https://img.shields.io/github/stars/LaughKing/RouteWeaver?style=for-the-badge&color=E6B655&logo=github&logoColor=white" alt="GitHub stars"></a>
@@ -27,8 +28,9 @@
 
 ## 📰 News
 
-- **[2026-10]** Code released, and the trained router is on the Hub. Paper on
-  arXiv coming soon.
+- **[2026-10]** Code released, the trained router is on the Hub, and the
+  [project page](https://laughking.github.io/RouteWeaver/) is up. Paper on arXiv
+  coming soon.
 
 ## 🧠 Overview
 

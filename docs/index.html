@@ -1,0 +1,644 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RouteWeaver</title>
+<meta name="description" content="RouteWeaver: one LLM policy that chooses an execution mode — single-round, multi-round or agentic — and then routes frozen workers inside it.">
+<link rel="icon" href="assets/logos/logo.png">
+<meta property="og:title" content="RouteWeaver: Weaving Mode Selection and Execution into Unified LLM Routing">
+<meta property="og:description" content="Three ways to route. One policy that chooses. 61.4% average accuracy, +11.03% over the strongest fixed-paradigm router.">
+<meta property="og:image" content="assets/figures/architecture.png">
+<style>
+:root{
+  --single:#c8761a; --multi:#15806f; --agentic:#6243cf;
+  --ink:#15171d; --ink-2:#4a4f5c; --ink-3:#787f8e;
+  --paper:#fbf8f3; --paper-2:#f4efe6; --line:#e2dad0;
+  --card:#ffffff; --shadow:0 1px 2px rgba(20,22,28,.05),0 8px 24px -12px rgba(20,22,28,.14);
+  --display:ui-serif,"Iowan Old Style","Palatino Linotype",Palatino,Georgia,serif;
+  --body:system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",sans-serif;
+  --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+  --maxw:1080px;
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --single:#e3a05c; --multi:#4fc3ae; --agentic:#a48cf5;
+    --ink:#eceef3; --ink-2:#b3b9c6; --ink-3:#848b9b;
+    --paper:#111319; --paper-2:#171a21; --line:#272b35;
+    --card:#191c24; --shadow:0 1px 2px rgba(0,0,0,.3),0 8px 24px -12px rgba(0,0,0,.6);
+  }
+}
+:root[data-theme="dark"]{
+  --single:#e3a05c; --multi:#4fc3ae; --agentic:#a48cf5;
+  --ink:#eceef3; --ink-2:#b3b9c6; --ink-3:#848b9b;
+  --paper:#111319; --paper-2:#171a21; --line:#272b35;
+  --card:#191c24; --shadow:0 1px 2px rgba(0,0,0,.3),0 8px 24px -12px rgba(0,0,0,.6);
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth; scroll-padding-top:76px}
+body{margin:0;background:var(--paper);color:var(--ink);font-family:var(--body);
+     font-size:16.5px;line-height:1.62;-webkit-font-smoothing:antialiased}
+.wrap{max-width:var(--maxw);margin:0 auto;padding:0 16px}
+a{color:inherit}
+h1,h2,h3{font-family:var(--display);font-weight:600;letter-spacing:-.01em;line-height:1.18}
+code,kbd{font-family:var(--mono);font-size:.88em}
+
+/* ---------- nav ---------- */
+nav{position:sticky;top:0;z-index:50;background:color-mix(in srgb,var(--paper) 88%,transparent);
+    backdrop-filter:saturate(180%) blur(12px);border-bottom:1px solid var(--line)}
+.nav-in{max-width:var(--maxw);margin:0 auto;padding:10px 16px;display:flex;align-items:center;gap:18px}
+.brand{display:flex;align-items:center;gap:9px;font-family:var(--display);font-weight:600;
+       font-size:17px;text-decoration:none;letter-spacing:-.015em}
+.brand .loom{width:22px;height:22px;flex:none}
+.nav-links{display:flex;gap:17px;margin-left:auto;font-size:14.5px;color:var(--ink-2)}
+.nav-links a{text-decoration:none}
+.nav-links a:hover{color:var(--ink)}
+.nav-cta{display:flex;gap:7px}
+.btn{display:inline-flex;align-items:center;gap:6px;padding:6px 12px;border-radius:999px;
+     border:1px solid var(--line);background:var(--card);color:var(--ink);
+     font-size:13.5px;font-weight:550;text-decoration:none;white-space:nowrap}
+.btn:hover{border-color:var(--ink-3)}
+.btn-solid{background:var(--ink);color:var(--paper);border-color:var(--ink)}
+@media (max-width:860px){.nav-links{display:none}}
+@media (max-width:520px){.nav-cta .opt{display:none}}
+
+/* ---------- hero ---------- */
+header.hero{padding:62px 0 40px;text-align:center;position:relative;overflow:hidden}
+.hero .logo{width:min(330px,74vw);height:auto;margin:0 auto 22px;display:block}
+.eyebrow{font-family:var(--mono);font-size:12px;letter-spacing:.14em;text-transform:uppercase;
+         color:var(--ink-3);margin:0 0 14px}
+.hero h1{font-size:clamp(27px,4.6vw,45px);margin:0 auto 14px;max-width:16.5em}
+.tagline{font-family:var(--display);font-style:italic;font-size:clamp(17px,2.3vw,22px);
+         color:var(--ink-2);margin:0 0 26px}
+.authors{font-size:15px;color:var(--ink-2);margin:0 0 4px}
+.affils{font-size:13.5px;color:var(--ink-3);margin:0 0 26px}
+.affils sup,.authors sup{font-size:.72em}
+.hero-cta{display:flex;gap:9px;justify-content:center;flex-wrap:wrap;margin-bottom:38px}
+
+/* ---------- the loom (hero figure) ---------- */
+.loom-fig{max-width:720px;margin:0 auto;padding:0 4px}
+.loom-fig svg{width:100%;height:auto;display:block;overflow:visible}
+.thread{fill:none;stroke-width:2.6;stroke-linecap:round;
+        stroke-dasharray:var(--len);stroke-dashoffset:var(--len);
+        animation:draw 2.6s cubic-bezier(.22,.7,.2,1) forwards}
+@keyframes draw{to{stroke-dashoffset:0}}
+.t1{stroke:var(--single);--len:860;animation-delay:.15s}
+.t2{stroke:var(--multi);--len:860;animation-delay:.35s}
+.t3{stroke:var(--agentic);--len:860;animation-delay:.55s}
+.t-out{stroke:var(--ink);--len:300;animation-delay:1.5s;stroke-width:3.4}
+.loom-lab{font-family:var(--mono);font-size:10.5px;letter-spacing:.07em;
+          text-transform:uppercase;fill:var(--ink-3);opacity:0;animation:fade .7s 1.9s forwards}
+@keyframes fade{to{opacity:1}}
+@media (prefers-reduced-motion:reduce){
+  .thread{animation:none;stroke-dashoffset:0}
+  .loom-lab{animation:none;opacity:1}
+}
+
+/* ---------- sections ---------- */
+section{padding:52px 0;border-top:1px solid var(--line)}
+.sec-head{max-width:40em;margin-bottom:30px}
+.kicker{font-family:var(--mono);font-size:11.5px;letter-spacing:.14em;text-transform:uppercase;
+        color:var(--ink-3);margin:0 0 9px}
+section h2{font-size:clamp(23px,3.1vw,32px);margin:0 0 12px}
+.lede{font-size:17.5px;color:var(--ink-2);margin:0}
+p{margin:0 0 15px}
+
+/* ---------- cards & grids ---------- */
+.grid{display:grid;gap:15px}
+.g3{grid-template-columns:repeat(3,1fr)}
+.g2{grid-template-columns:repeat(2,1fr)}
+@media (max-width:820px){.g3,.g2{grid-template-columns:1fr}}
+.card{background:var(--card);border:1px solid var(--line);border-radius:13px;
+      padding:20px 21px;box-shadow:var(--shadow)}
+.card h3{font-size:18px;margin:0 0 8px}
+.card p{font-size:15px;color:var(--ink-2);margin:0}
+.card p + p{margin-top:10px}
+.card .eq{font-family:var(--mono);font-size:13px;background:var(--paper-2);border-radius:8px;
+          padding:10px 12px;margin:12px 0 0;overflow-x:auto;white-space:nowrap;color:var(--ink)}
+.tag{display:inline-block;font-family:var(--mono);font-size:11px;letter-spacing:.07em;
+     text-transform:uppercase;padding:3px 8px;border-radius:999px;margin-bottom:11px}
+.tag-s{background:color-mix(in srgb,var(--single) 16%,transparent);color:var(--single)}
+.tag-m{background:color-mix(in srgb,var(--multi) 16%,transparent);color:var(--multi)}
+.tag-a{background:color-mix(in srgb,var(--agentic) 16%,transparent);color:var(--agentic)}
+
+/* ---------- headline stats ---------- */
+.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:13px;margin:0 0 6px}
+@media (max-width:820px){.stats{grid-template-columns:repeat(2,1fr)}}
+.stat{background:var(--card);border:1px solid var(--line);border-radius:13px;padding:17px 18px}
+.stat b{display:block;font-family:var(--display);font-size:clamp(25px,3.4vw,33px);
+        font-weight:600;letter-spacing:-.02em;line-height:1.1}
+.stat span{display:block;font-size:13.5px;color:var(--ink-3);margin-top:5px}
+.stat .pm{font-size:.6em;color:var(--ink-3);font-weight:500}
+
+/* ---------- tables ---------- */
+.tscroll{overflow-x:auto;-webkit-overflow-scrolling:touch;border:1px solid var(--line);
+         border-radius:13px;background:var(--card);box-shadow:var(--shadow)}
+table{width:100%;border-collapse:collapse;font-size:14.5px;font-variant-numeric:tabular-nums}
+th,td{padding:9px 13px;text-align:right;white-space:nowrap}
+th:first-child,td:first-child{text-align:left}
+thead th{font-family:var(--body);font-size:12px;letter-spacing:.06em;text-transform:uppercase;
+         color:var(--ink-3);font-weight:600;border-bottom:1px solid var(--line)}
+tbody tr + tr td{border-top:1px solid color-mix(in srgb,var(--line) 55%,transparent)}
+tr.grp td{font-family:var(--mono);font-size:11px;letter-spacing:.1em;text-transform:uppercase;
+          color:var(--ink-3);padding-top:14px;background:var(--paper-2)}
+tr.ours{background:color-mix(in srgb,var(--agentic) 7%,transparent);font-weight:650}
+tr.ours td:first-child{box-shadow:inset 3px 0 0 var(--agentic)}
+.rel{font-size:11.5px;color:var(--ink-3);font-weight:500;display:block}
+.hid{display:none}
+.tnote{font-size:13px;color:var(--ink-3);margin:11px 0 0}
+.tbtn{margin-top:13px}
+
+/* ---------- mode explorer ---------- */
+.ex{display:grid;grid-template-columns:200px 1fr;gap:22px;align-items:start}
+@media (max-width:760px){.ex{grid-template-columns:1fr}}
+.ex-tabs{display:flex;flex-direction:column;gap:5px}
+@media (max-width:760px){.ex-tabs{flex-direction:row;flex-wrap:wrap}}
+.ex-tab{appearance:none;border:1px solid var(--line);background:var(--card);color:var(--ink-2);
+        font:inherit;font-size:14.5px;text-align:left;padding:9px 13px;border-radius:9px;cursor:pointer}
+.ex-tab:hover{border-color:var(--ink-3)}
+.ex-tab[aria-selected="true"]{background:var(--ink);color:var(--paper);border-color:var(--ink);font-weight:600}
+.ex-panel{background:var(--card);border:1px solid var(--line);border-radius:13px;
+          padding:22px;box-shadow:var(--shadow)}
+.bar{display:flex;height:40px;border-radius:9px;overflow:hidden;margin:0 0 14px}
+.bar div{transition:flex-grow .55s cubic-bezier(.22,.7,.2,1);display:flex;align-items:center;
+         justify-content:center;font-size:13px;font-weight:650;color:#fff;min-width:0}
+.bar .b-s{background:var(--single)} .bar .b-m{background:var(--multi)}
+.bar .b-a{background:var(--agentic)} .bar .b-o{background:var(--ink-3)}
+.legend{display:flex;gap:16px;flex-wrap:wrap;font-size:13.5px;color:var(--ink-2);margin:0 0 14px}
+.legend i{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:6px}
+.ex-read{font-size:15.5px;color:var(--ink-2);margin:0}
+.ex-read b{color:var(--ink)}
+
+/* ---------- alpha slider ---------- */
+.dial{background:var(--card);border:1px solid var(--line);border-radius:13px;padding:22px;
+      box-shadow:var(--shadow)}
+.dial-row{display:grid;grid-template-columns:1fr 150px;gap:24px;align-items:center}
+@media (max-width:700px){.dial-row{grid-template-columns:1fr}}
+input[type=range]{width:100%;accent-color:var(--agentic)}
+.ticks{display:flex;justify-content:space-between;font-family:var(--mono);font-size:12px;
+       color:var(--ink-3);margin-top:5px}
+.dial-out{text-align:right}
+@media (max-width:700px){.dial-out{text-align:left}}
+.dial-out .big{font-family:var(--display);font-size:33px;font-weight:600;line-height:1.05;display:block}
+.dial-out .sub{font-size:13.5px;color:var(--ink-3)}
+.dial-delta{font-size:15px;color:var(--ink-2);margin:16px 0 0;padding-top:16px;
+            border-top:1px solid var(--line)}
+
+/* ---------- misc ---------- */
+.fig{margin:0;background:var(--card);border:1px solid var(--line);border-radius:13px;
+     padding:16px;box-shadow:var(--shadow)}
+.fig img{width:100%;height:auto;display:block;border-radius:6px}
+.fig figcaption{font-size:13.5px;color:var(--ink-3);margin-top:12px}
+pre{background:var(--card);border:1px solid var(--line);border-radius:11px;padding:15px 17px;
+    overflow-x:auto;font-family:var(--mono);font-size:13px;line-height:1.55;margin:0}
+.res{display:grid;grid-template-columns:repeat(3,1fr);gap:13px}
+@media (max-width:820px){.res{grid-template-columns:1fr}}
+.res a{display:block;background:var(--card);border:1px solid var(--line);border-radius:13px;
+       padding:18px 19px;text-decoration:none;box-shadow:var(--shadow)}
+.res a:hover{border-color:var(--ink-3)}
+.res b{display:block;font-family:var(--display);font-size:18px;margin-bottom:4px}
+.res span{font-size:14px;color:var(--ink-3)}
+footer{border-top:1px solid var(--line);padding:38px 0 46px;text-align:center}
+footer .f-logo{width:132px;opacity:.75;margin:0 auto 14px;display:block}
+footer p{font-size:14px;color:var(--ink-3);margin:0 0 6px}
+.totop{font-size:13.5px;color:var(--ink-3);text-decoration:none}
+.theme{appearance:none;border:1px solid var(--line);background:var(--card);color:var(--ink-2);
+       width:32px;height:32px;border-radius:999px;cursor:pointer;font-size:14px;line-height:1;flex:none}
+</style>
+</head>
+<body>
+
+<nav>
+  <div class="nav-in">
+    <a class="brand" href="#top">
+      <svg class="loom" viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M2 6c5 0 5 12 10 12s5-12 10-12" fill="none" stroke="var(--single)" stroke-width="2.2" stroke-linecap="round"/>
+        <path d="M2 12h20" fill="none" stroke="var(--multi)" stroke-width="2.2" stroke-linecap="round"/>
+        <path d="M2 18c5 0 5-12 10-12s5 12 10 12" fill="none" stroke="var(--agentic)" stroke-width="2.2" stroke-linecap="round"/>
+      </svg>
+      RouteWeaver
+    </a>
+    <div class="nav-links">
+      <a href="#problem">Problem</a>
+      <a href="#method">Method</a>
+      <a href="#results">Results</a>
+      <a href="#behavior">Behavior</a>
+      <a href="#cost">Cost</a>
+      <a href="#get">Get it</a>
+    </div>
+    <div class="nav-cta">
+      <button class="theme" id="theme" title="Toggle dark mode" aria-label="Toggle dark mode">◐</button>
+      <a class="btn opt" href="https://huggingface.co/e2rea1/RouteWeaver-4B">Model</a>
+      <a class="btn btn-solid" href="https://github.com/LaughKing/RouteWeaver">Code</a>
+    </div>
+  </div>
+</nav>
+
+<a id="top"></a>
+<header class="hero">
+  <div class="wrap">
+    <img class="logo" src="assets/logos/logo.png" alt="RouteWeaver">
+    <p class="eyebrow">Unified LLM Routing</p>
+    <h1>Weaving Mode Selection and Execution into Unified LLM Routing</h1>
+    <p class="tagline">Three ways to route. One policy that chooses.</p>
+    <p class="authors">
+      Xiaohan Wang<sup>1,2</sup>&nbsp; Haozhen Zhang<sup>1</sup>&nbsp;
+      Qingyuan Liu<sup>1</sup>&nbsp; Tao Feng<sup>3</sup>&nbsp; Wenya Wang<sup>1</sup>
+    </p>
+    <p class="affils">
+      <sup>1</sup>Nanyang Technological University &nbsp;·&nbsp;
+      <sup>2</sup>Huazhong University of Science and Technology &nbsp;·&nbsp;
+      <sup>3</sup>University of Illinois Urbana-Champaign
+    </p>
+    <div class="hero-cta">
+      <a class="btn" href="#">Paper <span style="color:var(--ink-3)">· soon</span></a>
+      <a class="btn btn-solid" href="https://github.com/LaughKing/RouteWeaver">Code</a>
+      <a class="btn" href="https://huggingface.co/e2rea1/RouteWeaver-4B">Model</a>
+      <a class="btn" href="https://huggingface.co/datasets/e2rea1/RouteWeaver-data">Data</a>
+    </div>
+
+    <figure class="loom-fig">
+      <svg viewBox="0 0 720 200" role="img" aria-label="Three execution modes woven into one policy">
+        <path class="thread t1" d="M8 44 C 150 44, 210 100, 330 100"/>
+        <path class="thread t2" d="M8 100 C 150 100, 210 100, 330 100"/>
+        <path class="thread t3" d="M8 156 C 150 156, 210 100, 330 100"/>
+        <rect x="330" y="58" width="92" height="84" rx="13" fill="none" stroke="var(--line)" stroke-width="1.5"/>
+        <path class="thread t-out" d="M422 100 C 520 100, 560 100, 700 100"/>
+        <circle cx="700" cy="100" r="4.5" fill="var(--ink)"/>
+        <text class="loom-lab" x="8" y="30" text-anchor="start">single</text>
+        <text class="loom-lab" x="8" y="88" text-anchor="start">multi</text>
+        <text class="loom-lab" x="8" y="180" text-anchor="start">agentic</text>
+        <text class="loom-lab" x="376" y="162" text-anchor="middle">one policy</text>
+        <text class="loom-lab" x="700" y="86" text-anchor="end">answer</text>
+      </svg>
+    </figure>
+  </div>
+</header>
+
+<section id="problem">
+  <div class="wrap">
+    <div class="sec-head">
+      <p class="kicker">The problem</p>
+      <h2>No paradigm wins everywhere</h2>
+      <p class="lede">Existing routers fix <em>how</em> model calls are organized before they ever see a
+      query — and the best fixed choice is different in every domain.</p>
+    </div>
+    <div class="grid g3">
+      <div class="card">
+        <span class="tag tag-s">single-round</span>
+        <h3>One call, one answer</h3>
+        <p>Cheapest and strongest among baselines on <b>Reason</b> and <b>Recall</b> — and badly
+        outmatched on Code.</p>
+      </div>
+      <div class="card">
+        <span class="tag tag-m">multi-round</span>
+        <h3>Sequential calls</h3>
+        <p>Each call reads the previous observation. Best among baselines on <b>Math</b>,
+        <b>Code</b> and <b>Knowledge</b>; wasteful on a one-hop lookup.</p>
+      </div>
+      <div class="card">
+        <span class="tag tag-a">agentic</span>
+        <h3>Role-structured layers</h3>
+        <p>Parallel calls with roles and references. Powerful where the work decomposes,
+        overkill where it does not.</p>
+      </div>
+    </div>
+    <p class="tnote">Which paradigm is strongest flips between domains, so any router that
+    commits to one in advance has already given up accuracy somewhere. RouteWeaver makes the
+    paradigm itself a routing decision.</p>
+  </div>
+</section>
+
+<section id="method">
+  <div class="wrap">
+    <div class="sec-head">
+      <p class="kicker">Method</p>
+      <h2>Make the paradigm a decision, then credit it separately</h2>
+      <p class="lede">One Qwen3-4B policy writes the mode, then routes six frozen workers inside
+      it — referring to them only by anonymous IDs with capability descriptions, never by model
+      name or price.</p>
+    </div>
+
+    <figure class="fig" style="margin-bottom:22px">
+      <img src="assets/figures/architecture.png" alt="RouteWeaver architecture: unified trajectory, COMET-GRPO and progressive exploration">
+      <figcaption>One action grammar covers all three modes; COMET-GRPO splits credit between the
+      mode decision and the execution inside it; progressive exploration hands mode selection over
+      only once each mode can be executed.</figcaption>
+    </figure>
+
+    <div class="grid g3">
+      <div class="card">
+        <h3>One trajectory, three shapes</h3>
+        <p>A rollout is <code>(m, a₁, o₁, …, a_T, o_T, y)</code>: the mode, then worker calls
+        interleaved with environment observations, then the answer. Single-round is exactly one
+        call, multi-round two to four sequential calls, agentic up to eight calls over
+        role- and reference-structured layers.</p>
+        <p>The mode, the actions and the answer are policy tokens. Worker output is context only —
+        it never carries a gradient.</p>
+      </div>
+      <div class="card">
+        <h3>COMET-GRPO: two comparisons, one group</h3>
+        <p>A low reward may mean the wrong mode, or the right mode executed badly. Ordinary GRPO
+        cannot tell: it puts one trajectory-level advantage on every router token. COMET-GRPO
+        splits it into an <em>across-mode</em> and a <em>within-mode</em> comparison, sharing one
+        group σ so the two sum back to the original signal exactly.</p>
+        <div class="eq">A_mode = (μ_m − μ)/(σ+ε) &nbsp;&nbsp; A_inner = (rᵢ − μ_m)/(σ+ε)</div>
+      </div>
+      <div class="card">
+        <h3>Learn to execute before deciding when</h3>
+        <p>If the router chose modes from the start, an early preference would starve the others of
+        experience. Progressive exploration forces the mode with probability ρ_b, annealed from all
+        forced to all free, so the policy learns to execute each mode first and inherits the choice
+        second.</p>
+        <div class="eq">ρ_b : 1 → 0 &nbsp; over &nbsp; b₀ ≤ b &lt; b₁</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="results">
+  <div class="wrap">
+    <div class="sec-head">
+      <p class="kicker">Results</p>
+      <h2>Better than every fixed paradigm, in every domain</h2>
+      <p class="lede">Nine benchmarks over five domains, against ten routers spanning all three
+      execution paradigms.</p>
+    </div>
+
+    <div class="stats">
+      <div class="stat"><b>61.4<span class="pm">%</span></b><span>average accuracy</span></div>
+      <div class="stat"><b>+11.03<span class="pm">%</span></b><span>over the strongest baseline</span></div>
+      <div class="stat"><b>5<span class="pm">/5</span></b><span>domains led</span></div>
+      <div class="stat"><b>+18.28<span class="pm">%</span></b><span>on held-out benchmarks</span></div>
+    </div>
+
+    <div class="tscroll" style="margin-top:22px">
+      <table>
+        <thead><tr><th>Method</th><th>Math</th><th>Code</th><th>Knowledge</th><th>Reason</th><th>Recall</th><th>Avg</th></tr></thead>
+        <tbody>
+          <tr class="grp"><td colspan="7">Single-round routers</td></tr>
+          <tr class="extra hid"><td>Router-KNN</td><td>61.7</td><td>34.8</td><td>38.3</td><td>68.3</td><td>40.4</td><td>48.7</td></tr>
+          <tr class="extra hid"><td>Router-MLP</td><td>58.7</td><td>33.2</td><td>40.0</td><td>59.2</td><td>34.2</td><td>45.1</td></tr>
+          <tr class="extra hid"><td>RouterDC</td><td>61.3</td><td>29.4</td><td>34.2</td><td>57.5</td><td>35.0</td><td>43.5</td></tr>
+          <tr><td>GraphRouter</td><td>64.6</td><td>36.1</td><td>34.2</td><td>69.2</td><td>39.6</td><td>48.7</td></tr>
+          <tr class="grp"><td colspan="7">Multi-round routers</td></tr>
+          <tr class="extra hid"><td>Prompt LLM</td><td>45.8</td><td>33.7</td><td>29.2</td><td>54.2</td><td>30.0</td><td>38.6</td></tr>
+          <tr class="extra hid"><td>Router-KNN-MR</td><td>40.8</td><td>33.2</td><td>30.8</td><td>48.3</td><td>29.6</td><td>36.6</td></tr>
+          <tr class="extra hid"><td>R2-Reasoner</td><td>45.8</td><td>30.7</td><td>28.3</td><td>50.0</td><td>23.3</td><td>35.6</td></tr>
+          <tr><td>Router-R1</td><td>66.3</td><td>52.8</td><td>48.9</td><td>68.7</td><td>39.8</td><td>55.3</td></tr>
+          <tr class="grp"><td colspan="7">Agentic routers</td></tr>
+          <tr><td>MasRouter</td><td>54.2</td><td>37.6</td><td>41.7</td><td>62.5</td><td>38.3</td><td>46.8</td></tr>
+          <tr class="extra hid"><td>GraphPlanner</td><td>47.5</td><td>48.3</td><td>30.0</td><td>54.2</td><td>39.2</td><td>43.8</td></tr>
+          <tr class="ours">
+            <td>RouteWeaver</td>
+            <td>74.6<span class="rel">+12.52%</span></td>
+            <td>58.2<span class="rel">+10.23%</span></td>
+            <td>55.0<span class="rel">+12.47%</span></td>
+            <td>76.7<span class="rel">+10.84%</span></td>
+            <td>42.5<span class="rel">+5.20%</span></td>
+            <td>61.4<span class="rel">+11.03%</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <button class="btn tbtn" id="more">Show all ten baselines</button>
+    <p class="tnote">Accuracy (%), RouteWeaver trained with α = 0. Domain accuracy is the unweighted
+    mean of its datasets; Avg is the unweighted mean of the five domains. Parentheses give the
+    relative improvement over the strongest baseline in that column. Relative gains over the best
+    single-round, multi-round and agentic baseline are 26.08%, 11.03% and 31.20%.</p>
+
+    <div class="grid g2" style="margin-top:34px">
+      <div>
+        <h3 style="font-size:19px;margin:0 0 12px">Both components matter — and one of them prevents collapse</h3>
+        <div class="tscroll">
+          <table>
+            <thead><tr><th>Variant</th><th>Avg</th><th>S / M / A</th></tr></thead>
+            <tbody>
+              <tr class="ours"><td>RouteWeaver</td><td>61.4</td><td>.35 / .41 / .24</td></tr>
+              <tr><td>w/o COMET-GRPO</td><td>58.8</td><td>.13 / .82 / .05</td></tr>
+              <tr><td>w/o progressive exploration</td><td>55.6</td><td>1.00 / .00 / .00</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="tnote">Without decision-specific credit the policy concentrates on multi-round.
+        Without the forced-to-free schedule it <b>collapses entirely to single-round</b> and stops
+        being a mode-selecting router at all. Both ablations still beat the strongest
+        fixed-paradigm baseline.</p>
+      </div>
+      <div>
+        <h3 style="font-size:19px;margin:0 0 12px">It transfers to benchmarks held out of training</h3>
+        <div class="tscroll">
+          <table>
+            <thead><tr><th>Method</th><th>AIME</th><th>GPQA-D</th><th>BBH</th><th>Avg</th></tr></thead>
+            <tbody>
+              <tr><td>GraphRouter</td><td>23.5</td><td>49.5</td><td>24.7</td><td>32.6</td></tr>
+              <tr><td>Router-R1</td><td>45.6</td><td>62.1</td><td>28.6</td><td>45.4</td></tr>
+              <tr><td>MasRouter</td><td>28.1</td><td>43.8</td><td>28.2</td><td>33.4</td></tr>
+              <tr class="ours"><td>RouteWeaver</td><td>57.0</td><td>69.2</td><td>35.0</td><td>53.7</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="tnote">+11.4, +7.1 and +6.4 points over Router-R1. The adaptive behavior transfers
+        too: agentic execution takes 75% of AIME queries but only 12% of BBH.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="behavior">
+  <div class="wrap">
+    <div class="sec-head">
+      <p class="kicker">Routing behavior</p>
+      <h2>It does not just pick the most expensive mode</h2>
+      <p class="lede">The learned preferences differ sharply by domain — and in two of the five,
+      almost every query goes to a single mode. Pick a domain:</p>
+    </div>
+    <div class="ex">
+      <div class="ex-tabs" role="tablist" aria-label="Domain">
+        <button class="ex-tab" role="tab" aria-selected="true"  data-d="math">Math</button>
+        <button class="ex-tab" role="tab" aria-selected="false" data-d="code">Code</button>
+        <button class="ex-tab" role="tab" aria-selected="false" data-d="knowledge">Knowledge</button>
+        <button class="ex-tab" role="tab" aria-selected="false" data-d="reason">Reason</button>
+        <button class="ex-tab" role="tab" aria-selected="false" data-d="recall">Recall</button>
+      </div>
+      <div class="ex-panel">
+        <div class="legend">
+          <span><i style="background:var(--single)"></i>single-round</span>
+          <span><i style="background:var(--multi)"></i>multi-round</span>
+          <span><i style="background:var(--agentic)"></i>agentic</span>
+        </div>
+        <div class="bar" id="bar" aria-hidden="true">
+          <div class="b-s" style="flex-grow:19"></div>
+          <div class="b-m" style="flex-grow:50"></div>
+          <div class="b-a" style="flex-grow:31"></div>
+          <div class="b-o" style="flex-grow:0"></div>
+        </div>
+        <p class="ex-read" id="read"></p>
+      </div>
+    </div>
+    <p class="tnote">Share of test queries per execution mode (α = 0). Slices the paper does not
+    label individually are shown unlabelled, so the bars still sum to 100%.</p>
+  </div>
+</section>
+
+<section id="cost">
+  <div class="wrap">
+    <div class="sec-head">
+      <p class="kicker">Accuracy and cost</p>
+      <h2>One dial, four operating points</h2>
+      <p class="lede">A second reward component scores worker cost, mixed in with weight α.
+      Nothing else changes — same policy, same training, same pool.</p>
+    </div>
+    <div class="dial">
+      <div class="dial-row">
+        <div>
+          <input type="range" id="alpha" min="0" max="3" step="1" value="0"
+                 aria-label="Efficiency weight alpha">
+          <div class="ticks"><span>α = 0</span><span>0.1</span><span>0.3</span><span>0.5</span></div>
+        </div>
+        <div class="dial-out">
+          <span class="big" id="acc">61.4%</span>
+          <span class="sub" id="accs">average accuracy</span>
+        </div>
+      </div>
+      <p class="dial-delta" id="delta">The reported model: task reward only, no efficiency term.</p>
+    </div>
+    <p class="tnote">Cost is fixed-reference worker inference cost per query; at α = 0 it is
+    reconstructed from token usage. Accuracy at α = 0 is 61.4%; the deltas are relative to it.</p>
+  </div>
+</section>
+
+<section id="get">
+  <div class="wrap">
+    <div class="sec-head">
+      <p class="kicker">Get it</p>
+      <h2>Code, weights, data</h2>
+      <p class="lede">The training and evaluation code is one repository with two entry points, on
+      an unpatched verl 0.8. Evaluation and training share the same code path.</p>
+    </div>
+    <div class="res">
+      <a href="https://github.com/LaughKing/RouteWeaver">
+        <b>Code →</b><span>Training, evaluation, the action grammar and dispatch. Apache-2.0.</span>
+      </a>
+      <a href="https://huggingface.co/e2rea1/RouteWeaver-4B">
+        <b>RouteWeaver-4B →</b><span>The released router: Qwen3-4B-Instruct-2507, fully fine-tuned, α = 0.</span>
+      </a>
+      <a href="https://huggingface.co/datasets/e2rea1/RouteWeaver-data">
+        <b>Datasets →</b><span>The exact training and evaluation sets, as verl prompt rows.</span>
+      </a>
+    </div>
+    <h3 style="font-size:19px;margin:30px 0 12px">Reproduce the reported model</h3>
+    <pre>git clone https://github.com/LaughKing/RouteWeaver.git &amp;&amp; cd RouteWeaver
+bash setup_env.sh &amp;&amp; conda activate routeweaver
+python data/hf_download.py
+
+bash scripts/train.sh cold     # phase 1: every query forced
+bash scripts/train.sh main     # phases 2-3: forced to free, with COMET-GRPO
+
+CKPT=... TAG=routeweaver GPU=0 OOD=1 bash scripts/eval.sh paper</pre>
+    <h3 style="font-size:19px;margin:30px 0 12px">Citation</h3>
+    <pre>@article{routeweaver2026,
+  title   = {RouteWeaver: Weaving Mode Selection and Execution into Unified LLM Routing},
+  author  = {Wang, Xiaohan and Zhang, Haozhen and Liu, Qingyuan and Feng, Tao and Wang, Wenya},
+  journal = {arXiv preprint},
+  year    = {2026}
+}</pre>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <img class="f-logo" src="assets/logos/logo.png" alt="">
+    <p>Three ways to route. One policy that chooses.</p>
+    <p><a class="totop" href="#top">Back to top ↑</a></p>
+  </div>
+</footer>
+
+<script>
+(function(){
+  "use strict";
+
+  /* The hero threads draw themselves. getTotalLength() is measured rather than
+     guessed, so the animation ends exactly when a thread is complete. */
+  document.querySelectorAll(".thread").forEach(function(el){
+    var len = Math.ceil(el.getTotalLength());
+    el.style.setProperty("--len", len);
+  });
+
+  /* theme toggle: remembers the choice, falls back to the OS setting */
+  var root = document.documentElement, tb = document.getElementById("theme");
+  try { var saved = localStorage.getItem("rw-theme"); if (saved) root.dataset.theme = saved; } catch(e){}
+  tb.addEventListener("click", function(){
+    var dark = root.dataset.theme
+      ? root.dataset.theme === "dark"
+      : matchMedia("(prefers-color-scheme: dark)").matches;
+    root.dataset.theme = dark ? "light" : "dark";
+    try { localStorage.setItem("rw-theme", root.dataset.theme); } catch(e){}
+  });
+
+  /* Table 1: reveal the remaining baselines */
+  var more = document.getElementById("more"), shown = false;
+  more.addEventListener("click", function(){
+    shown = !shown;
+    document.querySelectorAll("tr.extra").forEach(function(r){ r.classList.toggle("hid", !shown); });
+    more.textContent = shown ? "Show the strongest of each paradigm" : "Show all ten baselines";
+  });
+
+  /* mode-share explorer. `other` is the unlabelled remainder in Figure 4. */
+  var D = {
+    math:      {s:19, m:50, a:31, other:0,
+                t:"Math is the only domain that really uses all three: half the queries go multi-round, a third agentic, a fifth single-round."},
+    code:      {s:null, m:84, a:13, other:3,
+                t:"Code is dominated by multi-round routing — 84% of queries — where each call can read what the last one returned."},
+    knowledge: {s:72, m:17, a:11, other:0,
+                t:"Knowledge mostly needs one good worker: 72% single-round, with multi-round kept for the questions that decompose."},
+    reason:    {s:null, m:null, a:99, other:1,
+                t:"Reasoning goes almost entirely agentic — 99% — where role-structured layers can propose, check and aggregate."},
+    recall:    {s:96, m:null, a:null, other:4,
+                t:"Recall is the opposite extreme: 96% single-round. One lookup, one answer; anything more is wasted."}
+  };
+  var bar  = document.getElementById("bar"),
+      read = document.getElementById("read"),
+      cells = bar.children;
+
+  function show(key){
+    var d = D[key];
+    [d.s, d.m, d.a, d.other].forEach(function(v, i){
+      cells[i].style.flexGrow = v || 0;
+      cells[i].textContent = (v && v >= 11) ? v + "%" : "";
+    });
+    read.innerHTML = d.t;
+  }
+  document.querySelectorAll(".ex-tab").forEach(function(btn){
+    btn.addEventListener("click", function(){
+      document.querySelectorAll(".ex-tab").forEach(function(b){
+        b.setAttribute("aria-selected", String(b === btn));
+      });
+      show(btn.dataset.d);
+    });
+  });
+  show("math");
+
+  /* the alpha dial */
+  var A = [
+    {a:"0",   acc:"61.4%", note:"The reported model: task reward only, no efficiency term."},
+    {a:"0.1", acc:"60.4%", note:"<b>23% less cost</b> per query for 1.0 point of accuracy."},
+    {a:"0.3", acc:"58.3%", note:"<b>61% less cost</b> per query for 3.1 points of accuracy."},
+    {a:"0.5", acc:"50.2%", note:"<b>86% less cost</b> per query, but 11.2 points of accuracy."}
+  ];
+  var sl = document.getElementById("alpha"),
+      accEl = document.getElementById("acc"),
+      accSub = document.getElementById("accs"),
+      deltaEl = document.getElementById("delta");
+  function dial(){
+    var p = A[+sl.value];
+    accEl.textContent = p.acc;
+    accSub.textContent = "average accuracy at α = " + p.a;
+    deltaEl.innerHTML = p.note;
+  }
+  sl.addEventListener("input", dial);
+  dial();
+})();
+</script>
+</body>
+</html>
