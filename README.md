@@ -7,7 +7,7 @@
 <p align="center">
   <a href="https://laughking.github.io/RouteWeaver/"><img src="https://img.shields.io/badge/Project_Page-RouteWeaver-3F6FD8?style=for-the-badge&logo=githubpages&logoColor=white" alt="Project page"></a>
   <a href="#"><img src="https://img.shields.io/badge/arXiv-coming_soon-B31B1B?style=for-the-badge&logo=arxiv&logoColor=white" alt="arXiv: coming soon"></a>
-  <a href="https://huggingface.co/e2rea1/RouteWeaver-4B"><img src="https://img.shields.io/badge/HuggingFace-Model-FFD21E?style=for-the-badge&logo=huggingface&logoColor=FFD21E" alt="HuggingFace Model"></a>
+  <a href="https://huggingface.co/collections/e2rea1/routeweaver-6ac89596851c1c7650f72aa4"><img src="https://img.shields.io/badge/HuggingFace-Collection-FFD21E?style=for-the-badge&logo=huggingface&logoColor=FFD21E" alt="HuggingFace collection"></a>
   <a href="https://github.com/LaughKing/RouteWeaver/stargazers"><img src="https://img.shields.io/github/stars/LaughKing/RouteWeaver?style=for-the-badge&color=E6B655&logo=github&logoColor=white" alt="GitHub stars"></a>
   <a href="https://github.com/LaughKing/RouteWeaver/forks"><img src="https://img.shields.io/github/forks/LaughKing/RouteWeaver?style=for-the-badge&color=279A83&logo=git&logoColor=white" alt="GitHub forks"></a>
   <a href="https://github.com/LaughKing/RouteWeaver/issues"><img src="https://img.shields.io/github/issues/LaughKing/RouteWeaver?style=for-the-badge&color=7C64B5&logo=github&logoColor=white" alt="GitHub issues"></a>
@@ -197,6 +197,9 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 model = AutoModelForCausalLM.from_pretrained("e2rea1/RouteWeaver-4B", dtype="bfloat16")
 tok = AutoTokenizer.from_pretrained("e2rea1/RouteWeaver-4B")
 ```
+
+Weights and data are collected under
+[the RouteWeaver collection](https://huggingface.co/collections/e2rea1/routeweaver-6ac89596851c1c7650f72aa4).
 
 The cost-aware variants are released separately in
 [`RouteWeaver-4B-cost`](https://huggingface.co/e2rea1/RouteWeaver-4B-cost), one
