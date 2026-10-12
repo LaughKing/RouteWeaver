@@ -1,19 +1,5 @@
 """LiveCodeBench correctness: extract the program, run it against the test
 cases, all-or-nothing (standard LCB pass@1).
-
-`scorers.py` holds the non-code scorers -- QA sub-EM, gsm8k numeric, math
-symbolic and ARC multiple choice -- so the sandboxed code judges live here and
-are reached through bench_scoring. `ScoreResult` is imported from
-rewards/scorers, so a LiveCodeBench row has the same shape as every other
-row.
-
-Generated code is UNTRUSTED. It runs in a separate process with rlimits on
-address space, CPU and file size, a per-test alarm, an overall wall-clock
-timeout, a scratch cwd, and the usual destructive entry points removed from
-the child (the HumanEval `reliability_guard` approach). That is the standard
-bar for a code benchmark; it is not a security boundary against deliberately
-hostile code, and nothing here should be pointed at anything but benchmark
-output.
 """
 import json
 import os
@@ -40,19 +26,7 @@ _FENCE_OPEN = re.compile(r"```(?:python|py|python3)?[ \t]*\n", re.IGNORECASE)
 
 
 def extract_code(text: str) -> str:
-    """The program the router put in <answer>.
-
-    Last fenced block wins: a model that explains and then gives the final
-    program puts the program last, and taking the first block would grade the
-    illustration instead of the answer.
-
-    A reply cut off by max_tokens leaves an OPEN fence and no closing one. The
-    code-shaped fallback then returned the entire reply -- prose and all -- so
-    the scorer reported `SyntaxError ... line 1` over a program-sized blob of
-    commentary. Recovering the tail after
-    the last opening fence grades the truncated program, which is what the model
-    actually produced, instead of grading its commentary.
-    """
+    """The program the router put in <answer>."""
     if not text:
         return ""
     blocks = _FENCE.findall(text)
@@ -62,14 +36,11 @@ def extract_code(text: str) -> str:
     if opens:
         return text[opens[-1].end():].strip()
     stripped = text.strip()
-    # unfenced but code-shaped (def/class/import at the start of some line)
     if re.search(r"^\s*(def |class |import |from |print\()", stripped, re.MULTILINE):
         return stripped
     return ""
 
 
-# The child. Kept as a source string so the scorer is one importable file and
-# the subprocess has no dependency on this package being importable.
 _RUNNER = r'''
 import base64, io, json, os, resource, signal, sys
 
@@ -268,9 +239,7 @@ def base64_payload(obj) -> bytes:
 
 
 def score_livecodebench(response_text, sample, **kwargs) -> ScoreResult:
-    """Same return shape as rewards/scorers.score_answer, so a LiveCodeBench row
-    slots into the wrapper's row schema unchanged. Binary, like every non-QA
-    scorer there: score/em/f1 all carry the same value."""
+    """Binary LiveCodeBench score in rewards/scorers.score_answer's return shape."""
     code = extract_code(response_text)
     verdict = run_tests(
         code, sample["tests"], sample["test_type"], sample.get("func_name"),

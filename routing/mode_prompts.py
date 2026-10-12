@@ -1,15 +1,5 @@
 # Copyright 2026 RouteWeaver.
-"""The single- and multi-round rule text injected after a mode declaration.
-
-`mode_selector.mode_rules` renders the rules for the declared mode. For
-`agentic` it owns the text itself; for `single` and `multi` the rules ARE the
-corresponding one-mode action space from `prompt_pool.render_prompt`, which is
-what this builder produces. Extracted verbatim from the evaluation harness the
-reported runs imported it from, so the rendered text is byte-identical.
-
-`STAGED` keys are historical ("forced_*"): the mode is given, which is also the
-situation during the cold start and the forced arm of the transition.
-"""
+"""The single- and multi-round rule text injected after a mode declaration."""
 from prompt_pool import render_prompt
 
 ROUTER_RULES = (
@@ -28,12 +18,7 @@ SUFFIX = {"forced_single": "",
 
 
 def build_sm_prompt(question, mode, worker_ids=None):
-    """The one-mode action space for `mode`, plus the router rules.
-
-    The explicit_v2 variant restates the multi rule; on an action space that has
-    no multi rule to restate (single) it refuses, and the compact variant is the
-    intended fallback -- the control flow the reported runs used.
-    """
+    """The one-mode action space for `mode`, plus the router rules."""
     try:
         text = render_prompt(question, model="qwen", allowed_modes=STAGED[mode],
                              variant="explicit_v2", worker_ids=worker_ids)

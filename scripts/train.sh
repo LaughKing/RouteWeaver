@@ -31,11 +31,7 @@ export TRAIN_FILES=$TRAIN_PARQUET
 export ALLOW_WARM_START=1
 export RESUME_MODE=${RESUME_MODE:-auto}
 
-# Phases 2-3 continue the cold start: the run gets its own output dir whose
-# global_step_25 is a symlink to the shared checkpoint, and a tracker that says
-# 25 on a FIRST start only -- on a restart it keeps whatever the run last saved,
-# so a relaunch never re-trains steps. This is a real resume (model, optimizer
-# and dataloader state at row 800), so rho_b continues from batch_index 25.
+# Phases 2-3 resume from the cold-start checkpoint (global_step_25).
 resume_from_cold() {
     local cold=${COLD_CKPT:-$OUTPUTS/routeweaver_cold/checkpoints/global_step_25}
     [ -d "$cold/actor" ] || { echo "FATAL: cold-start checkpoint missing: $cold" >&2; exit 1; }
@@ -90,19 +86,14 @@ wo_progressive)
     export ROUTEWEAVER_SUPPORT=1                         # inert: lambda_b = lambda_0 * 0
     ;;
 calibration)
-    # 1024 rollouts (128 queries x 8) of the cold-start checkpoint with TRAINING
-    # decoding, cost measured but never rewarded; then C_ref = P95 of the
-    # per-trajectory worker cost. The frozen result is configs/cost_ref.json.
+    # 1024 rollouts of the cold-start checkpoint; C_ref = P95 per-trajectory worker cost.
     export EXPERIMENT_NAME=${EXPERIMENT_NAME:-cost_calib_128}
     export OUTPUT_DIR=$OUTPUTS/$EXPERIMENT_NAME
     CKPT=${COLD_CKPT:-$OUTPUTS/routeweaver_cold/checkpoints/global_step_25}
     HF=$OUTPUTS/hf_export/routeweaver_cold_step25
-    # The rollout needs merged weights. Merging reads a sharded checkpoint and
-    # writes ~8 GB, so it must not run just to resolve the configuration.
+    # The rollout needs merged weights (~8 GB).
     if [ ! -f "$HF/model.safetensors" ] && ! ls "$HF"/model-0000*-of-*.safetensors >/dev/null 2>&1; then
         if [ "${DRY_RUN:-0}" = "1" ]; then
-            # Nothing further can be resolved: the rollout runs against weights
-            # that only exist once the merge has actually run.
             echo "DRY_RUN: would merge $CKPT/actor into $HF, then roll out"
             echo "         128 queries x 8 against it. Nothing launched."
             exit 0

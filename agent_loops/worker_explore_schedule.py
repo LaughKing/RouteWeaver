@@ -1,24 +1,4 @@
-"""Worker-level early exploration: a prompt-level FORCED WORKER curriculum.
-
-Same shape as exploration_schedule.py, and for the same reasons. Everything is a
-deterministic function of (sample_id, batch_index) taken from the parquet, so:
-
-  * every rollout of a query gets the SAME verdict and the SAME worker, which
-    keeps a GRPO group inside one prompt (group_key is 1:1 with sample_id, and
-    grpo_gated takes std within the group);
-  * a resume reproduces the schedule bit-for-bit -- nothing is sampled at
-    runtime, and batch_index comes from the row, not from a counter.
-
-The forced worker is expressed ONLY as a sentence in the turn-2 injected rules.
-The full candidate list is still shown, the router still writes the whole
-<route model="..."> itself, and the reward is defined over the tokens it
-actually emitted. Nothing rewrites an action after the fact: substituting the
-dispatched model would make the reward a statement about a trajectory the
-policy never produced.
-
-Compliance is therefore NOT guaranteed, only measured: the loop records
-forced_worker alongside the ids actually written.
-"""
+"""Worker-level early exploration: a prompt-level FORCED WORKER curriculum."""
 import hashlib
 import os
 
@@ -47,11 +27,7 @@ def beta_for(batch_index, beta0=None, steps=None, start=None):
 
 
 def forced_worker(sample_id, batch_index, pool, beta0=None, steps=None, start=None):
-    """The worker this query is told to use, or None for free generation.
-
-    Target is a uniform round-robin over the pool keyed on sample_id alone, so
-    coverage is even and does not follow the policy's own preferences.
-    """
+    """The worker this query is told to use, or None for free generation."""
     if not sample_id or not pool:
         return None
     if _u("worker-explore-draw", sample_id) >= beta_for(batch_index, beta0, steps, start):
@@ -60,25 +36,13 @@ def forced_worker(sample_id, batch_index, pool, beta0=None, steps=None, start=No
 
 
 def display_order(sample_id, pool):
-    """Per-query permutation of the candidate list. Identity when disabled.
-
-    Order is a rendering choice only: validate_route resolves by registry
-    lookup, so no parser, dispatcher or reward path reads a position.
-    """
+    """Per-query permutation of the candidate list. Identity when disabled."""
     ids = list(pool)
     if os.environ.get("WORKER_ORDER_SHUFFLE", "0") != "1" or not sample_id:
         return ids
     return [w for _, w in sorted((_u("worker-order", f"{sample_id}|{w}"), w) for w in ids)]
 
 
-# ---------------------------------------------------------------- design ---
-# 4 workers x 2 rollouts inside one K=8 group. WHICH 4 rotates across queries
-# on the COMPLEMENT OF THE FANO PLANE: 7 blocks of size 4 over 7 points where
-# every worker sits in exactly 4 blocks and every PAIR of workers co-occurs in
-# exactly 2. That is the only 7-point design with both balanced exposure and
-# balanced pair coverage, so no worker and no head-to-head comparison is
-# systematically under-sampled. (Fano is 2-(7,3,1); its complement is
-# 2-(7,4,2) with r = b - r_fano = 4.)
 _FANO = ((0, 1, 3), (1, 2, 4), (2, 3, 5), (3, 4, 6), (4, 5, 0), (5, 6, 1), (6, 0, 2))
 BLOCKS = tuple(tuple(i for i in range(7) if i not in b) for b in _FANO)
 PAIRS_PER = 2
@@ -95,26 +59,12 @@ def block_for(sample_id, pool):
 
 def worker_for_rollout(sample_id, batch_index, pool, rollout_n,
                        beta0=None, steps=None, start=None):
-    """The worker rollout `rollout_n` of this query is told to use, or None.
-
-    Whether the QUERY explores is the beta draw on sample_id alone, so all 8
-    rollouts of a group are exploration rollouts together or none are -- the
-    group never mixes an exploration prompt with a free one, which is what
-    keeps mu_G a single well-defined baseline. WITHIN the group the worker is a
-    function of rollout_n, so the 8 rollouts carry 4 different worker names,
-    2 each. That is the whole point: identical names across a group make
-    sum_i A_i * dlogpi(w|ctx) collapse to dlogpi * sum_i A_i == 0.
-    """
+    """The worker rollout `rollout_n` of this query is told to use, or None."""
     if not sample_id or not pool or rollout_n is None:
         return None
     if _u("worker-explore-draw", sample_id) >= beta_for(batch_index, beta0, steps, start):
         return None
     four = block_for(sample_id, pool)
-    # rollout_n is the GROUP-LOCAL ordinal (trainers/rollout_ordinal_hook), so with
-    # K=8 the pairs (0,1),(2,3),(4,5),(6,7) map onto the block's 4 workers,
-    # 2 rollouts each. The modulo is a guard, not the mechanism: it only fires
-    # if K ever exceeds 2*len(block), and pairing no longer depends on batch
-    # layout the way a positional counter did.
     per = max(1, int(os.environ.get("ROLLOUT_N", "8")) // len(four))
     return four[(int(rollout_n) // per) % len(four)]
 

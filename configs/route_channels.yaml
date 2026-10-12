@@ -1,15 +1,5 @@
-# Backend mapping for the six workers. The router never sees this file: it
-# emits worker_1 .. worker_6, and this is where those ids become endpoints.
-#
-# - A worker may list several candidate entries; order is priority.
-# - API keys are referenced by path, never inlined. Do not commit secrets.
-# - The real model ids are kept as extra keys at the bottom, so a run with
-#   ROUTEWEAVER_WORKER_ALIAS=0 dispatches through the same entries.
-#
-# worker_1 and worker_2 are served locally (vLLM, OpenAI-compatible); the rest
-# go through OpenRouter with the provider pinned, so a worker's backend cannot
-# silently change between runs. Replace the base_url / model / auth of an entry
-# to point a worker somewhere else.
+# Backend mapping for worker_1 .. worker_6. Entry order is priority;
+# API keys are referenced by path, never inlined.
 _openrouter:
   base_url: https://openrouter.ai/api/v1/chat/completions
   auth: &id001

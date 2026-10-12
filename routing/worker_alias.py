@@ -1,35 +1,7 @@
-"""Fixed anonymous worker directory (worker_1 .. worker_6). ONE data source.
-
-Every place that renders a worker list -- prompt_pool (single/multi) and
-route_syntax (agentic) -- calls `catalog_block()` here, so the three modes
-cannot drift into three separately maintained copies of the same text.
-
-THE MAPPING IS FIXED. Not permuted per episode, per resume or per eval. A
-permuted mapping would leave the worker-name tokens carrying no stable meaning
-and would make every share/entropy number unreadable across steps.
-
-WHAT THE ROUTER SEES: the alias, the capability description, and the output
-budget. Never the backend, the provider, a tier word (small/medium/large), a
-"strongest in this pool" hint, or a role pre-assignment. The descriptions are
-operator-supplied initial capability information taken from official model
-documentation; they are NOT a measured ranking inside this pool, and they do not
-bind any worker to planner/executor/verifier.
-
-FIELD NAME IS UNCHANGED. Routes still read model="worker_1". Node identity is
-separate and still n1/n2/...; refs reference node ids, never worker numbers.
-
-
-OUTPUT BUDGET. `BUDGET_TOKENS` is the cap the dispatcher actually applies, on
-every mode and every role -- confirmed by building the real payload with the
-network mocked rather than by reading the config chain. The channel entries'
-own max_tokens never bind: `llm_client` resolves `max_tokens or
-self.default_max_tokens or entry.get("max_tokens", ...)`, and the loop always
-supplies the pool's value.
-"""
+"""Fixed anonymous worker directory (worker_1 .. worker_6). ONE data source."""
 import os
 from typing import Dict, Tuple
 
-# (alias, backend model id, description)
 _CATALOG: Tuple[Tuple[str, str, str], ...] = (
     ("worker_1", "qwen3_8b",
      "Dense language model with 8.2B parameters. Supports multilingual "
@@ -62,21 +34,14 @@ ALIAS_TO_REAL: Dict[str, str] = {a: r for a, r, _ in _CATALOG}
 REAL_TO_ALIAS: Dict[str, str] = {r: a for a, r, _ in _CATALOG}
 DESCRIPTIONS: Dict[str, str] = {a: d for a, _, d in _CATALOG}
 
-# The cap the dispatcher applies, on every mode and every role. Verified against
-# the real payload construction path, not read off the config.
 BUDGET_TOKENS = 4096
 BUDGET_SENTENCE = (f"Each worker call has a maximum output budget of "
                    f"{BUDGET_TOKENS} tokens.")
 
-# Worked-example anchors. FIXED, and deliberately not taken from the per-query
-# display order: a moving anchor makes demo anchoring indistinguishable from
-# position (route_syntax.build).
 EXAMPLE_PRIMARY = "worker_1"
 EXAMPLE_SECONDARY = "worker_2"
 EXAMPLE_TERTIARY = "worker_3"
 
-# Bumped whenever the ids, the descriptions or the budget sentence change, so a
-# cached template or a dataset fingerprint cannot silently reuse an old catalog.
 CATALOG_VERSION = "alias-v1-2026-09-12"
 
 
@@ -85,11 +50,7 @@ def enabled() -> bool:
 
 
 def catalog_block(worker_ids=None) -> str:
-    """The block all three modes render, from this one source.
-
-    `worker_ids` is a DISPLAY ORDER only (worker_explore_schedule.display_order);
-    it never changes which ids are legal. None keeps the canonical order.
-    """
+    """The block all three modes render, from this one source."""
     ids = list(worker_ids or ALIAS_POOL)
     lines = "\n".join(f"{wid}: {DESCRIPTIONS[wid]}" for wid in ids)
     return f"{BUDGET_SENTENCE}\n\n{lines}"
@@ -97,7 +58,8 @@ def catalog_block(worker_ids=None) -> str:
 
 def to_real(alias: str) -> str:
     """alias -> backend model id. An id that is not an alias passes through
-    unchanged, so a route naming a real id still resolves."""
+    unchanged, so a route naming a real id still resolves.
+    """
     return ALIAS_TO_REAL.get(str(alias).strip().lower(), alias)
 
 
@@ -106,9 +68,7 @@ def to_alias(real: str) -> str:
 
 
 def mapping_banner() -> str:
-    """For the launch log, so the run records which backend each alias stood for
-    without anyone having to reconstruct it from the code at that revision.
-    Never rendered into a prompt."""
+    """Alias -> backend mapping for the launch log."""
     out = [f"[worker_alias] FIXED anonymous directory  version={CATALOG_VERSION}",
            f"[worker_alias] enforced output budget: {BUDGET_TOKENS} tokens "
            f"(every mode, every role)"]

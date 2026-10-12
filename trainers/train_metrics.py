@@ -1,21 +1,5 @@
 # Copyright 2026 RouteWeaver.
-"""Per-step routing metrics, into whatever verl logs to.
-
-WHY A HOOK. The mode share IS the measurement here, and verl's
-compute_data_metrics only knows about scores, advantages and lengths --
-reward_extra_info columns reach non_tensor_batch and then go only to the rollout
-dump. Reading a collapse out of 100 dumped JSONL files after the fact is not the
-same instrument as watching it on a curve. So compute_data_metrics is WRAPPED
-(the same mechanism as the dispatch gate: ray_trainer resolves it as a module
-global at call time, so nothing in verl is edited) and the routeweaver/* keys are
-added to the dict it returns.
-
-Everything here is descriptive. Nothing computed in this file is fed back into
-the loss, the reward or the sampler -- a baseline that watches itself must not
-also steer itself.
-
-Enabled when ROUTEWEAVER_METRICS is set to 1 (the launcher does it).
-"""
+"""Per-step routing metrics, into whatever verl logs to."""
 import math
 import os
 from collections import Counter, defaultdict
@@ -32,7 +16,8 @@ def _column(batch, name):
 
 
 def train_metrics(batch) -> dict:
-    """routeweaver/* metrics for one step. Never raises: a metric must not stop a run."""
+    """routeweaver/* metrics for one step. Never raises: a metric must not stop a run.
+    """
     out = {}
     modes = _column(batch, "mode")
     if modes is None:
@@ -48,7 +33,6 @@ def train_metrics(batch) -> dict:
     domains = _column(batch, "rfm_domain") or [""] * n
     valid = _column(batch, "selector_valid") or [0] * n
 
-    # ---- mode share. `invalid` is its own bucket, never folded into single ---
     counts = Counter(m if m in MODES else "invalid" for m in modes)
     for mode in MODES + ("invalid",):
         out[f"routeweaver/mode_share/{mode}"] = counts.get(mode, 0) / max(1, n)
@@ -58,13 +42,11 @@ def train_metrics(batch) -> dict:
         out["routeweaver/selector_retry_rate"] = sum(
             1 for a in attempts if int(a) > 1) / max(1, len(attempts))
 
-    # batch-level mode entropy in nats: 0 = collapsed, ln 3 = uniform
     import math
     total = sum(counts.values())
     out["routeweaver/mode_entropy"] = -sum(
         (c / total) * math.log(c / total) for c in counts.values() if c)
 
-    # ---- per-group (one prompt, K rollouts) --------------------------------
     groups = defaultdict(list)
     for i, uid in enumerate(uids):
         groups[uid].append(i)
@@ -84,7 +66,6 @@ def train_metrics(batch) -> dict:
     out["routeweaver/zero_variance_group_ratio"] = zero_var / max(1, len(groups))
     out["routeweaver/group_reward_std_mean"] = sum(group_std) / max(1, len(group_std))
 
-    # ---- reward, with and without the neutralised system failures ----------
     out["routeweaver/reward_mean_all_rows"] = sum(float(r) for r in rewards) / max(1, n)
     clean = [float(r) for r, f in zip(rewards, infra) if int(f) == 0]
     out["routeweaver/reward_mean_excluding_system"] = (
@@ -94,7 +75,6 @@ def train_metrics(batch) -> dict:
     for kind in ("correct", "genuine_incorrect", "parser_error") + SYSTEM_KINDS:
         out[f"routeweaver/failure_kind/{kind}"] = kind_counts.get(kind, 0) / max(1, n)
 
-    # ---- per-mode and per-domain reward ------------------------------------
     for mode in MODES:
         rows = [float(rewards[i]) for i in range(n) if modes[i] == mode]
         if rows:
@@ -105,19 +85,10 @@ def train_metrics(batch) -> dict:
             out[f"routeweaver/reward_by_domain/{domain}"] = sum(rows) / len(rows)
             out[f"routeweaver/rows_by_domain/{domain}"] = len(rows)
 
-    # ---- mask provenance ---------------------------------------------------
-    # These four must read 1 / 0 / 1 / >0 on every row for the whole run. A
-    # violation count above zero means the trajectory the optimizer saw is not
-    # the trajectory this design describes, and is a reason to stop.
     pol_min = _column(batch, "policy_span_mask_min")
     env_max = _column(batch, "env_span_mask_max")
     mode_min = _column(batch, "mode_span_mask_min")
     mode_tok = _column(batch, "mode_span_tokens")
-    # A FORCED-MODE RUN INVERTS THE MODE-SPAN RULE. When the policy writes
-    # <mode>, mode_span_mask_min must be 1. When the ENVIRONMENT writes it, that span
-    # is mask 0 by design and the policy-written clause would flag every row (it flagged
-    # every row of the batch). Detect the forced case and drop the
-    # mode term; m1/forced_mode_span_mask_max carries the inverted check.
     conditional = bool(_column(batch, "forced_mode"))
     if pol_min and env_max and (mode_min or conditional):
         if conditional:
@@ -139,7 +110,6 @@ def train_metrics(batch) -> dict:
         if values:
             out[f"routeweaver/{name}_mean"] = sum(float(v) for v in values) / len(values)
 
-    # ---- environment cost, logged and never rewarded -----------------------
     for name, key in (("worker_calls", "worker_calls"),
                       ("failed_worker_calls", "failed_worker_calls"),
                       ("route_count", "route_count"),
@@ -156,9 +126,7 @@ def train_metrics(batch) -> dict:
 
 
 def m1_metrics(batch) -> dict:
-    """Forced-mode slices: everything sliced BY FORCED MODE, plus the conditional
-    grammar signals. Inert when the batch carries no forced_mode column, so the
-    free-routing metric set is unchanged."""
+    """Metrics sliced by forced mode. Inert without a forced_mode column."""
     out = {}
     modes = _column(batch, "forced_mode")
     if not modes:
@@ -178,7 +146,6 @@ def m1_metrics(batch) -> dict:
     term = col("terminal_invalid"); fpv = col("first_pass_valid")
     evv = col("eventual_valid"); cues = col("cue_count")
     prem = col("answer_premature"); refs = col("refs_violation")
-    # no-cue branch: cue MESSAGES (not codes) and the terminal-violation flag
     cue_msgs = col("cue_messages"); heads = col("state_headers")
     codes = [str(c or "") for c in
              (_column(batch, "policy_invalid") or [""] * n)]
@@ -187,7 +154,6 @@ def m1_metrics(batch) -> dict:
     calls = col("worker_calls"); turns = col("turns")
     sigs = _column(batch, "route_signature") or [""] * n
 
-    # ---- per mode, and per domain x mode -----------------------------------
     for mode in MODES:
         idx = [i for i in range(n) if modes[i] == mode]
         if not idx:
@@ -207,9 +173,6 @@ def m1_metrics(batch) -> dict:
         out[f"{k}/policy_invalid_rate"] = m(pol_inv)
         out[f"{k}/answer_premature_rate"] = m(prem)
         out[f"{k}/refs_violation_rate"] = m(refs)
-        # the error frontier, one column per rule. Reported unconditionally
-        # for these five, so a rate that drops to zero is visible as a zero
-        # rather than as a missing series.
         seen = Counter(codes[i] for i in idx if codes[i])
         for code in ("ref_unknown", "ref_same_layer", "verifier_needs_refs",
                      "must_summarize_now", "action_missing"):
@@ -233,9 +196,6 @@ def m1_metrics(batch) -> dict:
             var = sum((v - mean) ** 2 for v in vals) / max(1, len(vals) - 1)
             spread = var ** 0.5
             zero += int(spread < 1e-4)
-            # USABLE = it can move the policy: at least two rows the dispatch
-            # gate kept, and rewards that are not all identical. A group of
-            # eight identical -1s contributes exactly nothing.
             kept = [i for i in rows if not int(infra[i] or 0)]
             usable += int(len(kept) >= 2 and spread >= 1e-4)
         out[f"{k}/groups"] = len(groups)
@@ -251,7 +211,6 @@ def m1_metrics(batch) -> dict:
                     sum(float(correct[i]) for i in sub) / len(sub))
                 out[f"m1/by_domain/{domain}/{mode}/rows"] = len(sub)
 
-    # ---- group hygiene: a group must be ONE query and ONE mode -------------
     per_uid_modes, per_uid_ids = defaultdict(set), defaultdict(set)
     sids = _column(batch, "rfm_sample_id") or [""] * n
     for i in range(n):
@@ -264,16 +223,11 @@ def m1_metrics(batch) -> dict:
     sizes = Counter(len(v) for v in
                     [[i for i in range(n) if uids[i] == u] for u in set(uids)])
     out["m1/group_size_min"] = min(sizes) if sizes else 0
-    # the forced declaration must carry NO gradient
     fmask = _column(batch, "forced_mode_span_mask_max")
     if fmask:
         out["m1/forced_mode_span_mask_max"] = max(int(v) for v in fmask)
-    # mode share as EXECUTED, to catch a loop that ignored the forced field
     executed = _column(batch, "mode") or []
     if executed:
-        # Stage 2 mixes forced and free rows; a FREE row is supposed to execute
-        # a mode different from its (unused) forced_mode field, so scoring it
-        # here would make annealing look like a loop bug. Judge forced rows only.
         s2 = _column(batch, "stage2_forced")
         pairs = [(a, b) for i, (a, b) in enumerate(zip(modes, executed))
                  if not s2 or int(s2[i]) == 1]
@@ -293,10 +247,6 @@ def stage2_metrics(batch) -> dict:
     n = len(alphas)
     forced = [int(v) for v in (_column(batch, "stage2_forced") or [1] * n)]
     executed = _column(batch, "mode") or [""] * n
-    # Same fallback the other two metric blocks use. The earlier `or [0.0]*n`
-    # form silently reported every arm as exactly 0.000, because neither
-    # "task_reward" nor "reward" is a non-tensor column on this batch -- the
-    # reward lives in token_level_scores.
     rewards = _column(batch, "reward")
     if rewards is None:
         scores = batch.batch.get("token_level_scores")
@@ -315,7 +265,6 @@ def stage2_metrics(batch) -> dict:
             continue
         out[f"stage2/{arm}/reward_mean"] = sum(
             float(rewards[i]) for i in idx) / len(idx)
-        # THE COLLAPSE INDICATOR: what the policy picks when nobody tells it.
         counts = Counter(str(executed[i] or "invalid") for i in idx)
         for mode in ("single", "multi", "agentic"):
             out[f"stage2/{arm}/mode_share/{mode}"] = counts.get(mode, 0) / len(idx)
@@ -323,8 +272,6 @@ def stage2_metrics(batch) -> dict:
             len(idx) - sum(counts.get(m, 0) for m in
                            ("single", "multi", "agentic"))) / len(idx)
 
-    # HARD INVARIANT: a GRPO group must be all-forced or all-free. Anything
-    # above zero means an advantage was computed across two different regimes.
     per_uid = {}
     for i in range(n):
         per_uid.setdefault(uids[i], set()).add(forced[i])
@@ -332,7 +279,6 @@ def stage2_metrics(batch) -> dict:
         1 for v in per_uid.values() if len(v) > 1)
     out["stage2/groups"] = len(per_uid)
 
-    # the free arm's mode token MUST carry gradient (mask 1); -1 = not a free row
     fmin = [int(v) for v in (_column(batch, "free_mode_span_mask_min") or [])
             if int(v) >= 0]
     if fmin:
@@ -342,17 +288,7 @@ def stage2_metrics(batch) -> dict:
 
 
 def routing_metrics(batch) -> dict:
-    """What the FREE arm actually decides, and how sure it is.
-
-    actor/entropy is the wrong instrument for this task: the policy emits ~190
-    tokens of which only the mode word carries the decision, so a large swing in
-    routing behaviour (MATH went 52% -> 94% multi between step 75 and 125)
-    leaves it flat at ~0.13. These three families measure the decision itself.
-
-    Everything here is derived from the free arm only. Forced rows have their
-    declaration written by the environment, so counting them would report the
-    dataset's quota back to us as if it were policy behaviour.
-    """
+    """What the FREE arm actually decides, and how sure it is."""
     mode_min = _column(batch, "mode_span_mask_min")
     if not mode_min:
         return {}
@@ -367,7 +303,6 @@ def routing_metrics(batch) -> dict:
 
     MODES = ("single", "multi", "agentic")
 
-    # ---- 1. marginal share, overall and per domain ------------------------
     for m in MODES:
         out[f"routing/share/{m}"] = sum(
             1 for i in free if modes[i] == m) / len(free)
@@ -377,10 +312,6 @@ def routing_metrics(batch) -> dict:
             out[f"routing/share_by_domain/{domain}/{m}"] = sum(
                 1 for i in sub if modes[i] == m) / len(sub)
 
-    # ---- 2. per-question entropy over the K samples -----------------------
-    # How undecided the policy is ON ONE QUESTION, which is the quantity that
-    # actually has to fall for routing to have converged. Averaged over the
-    # questions in the batch. 0 = every sample picked the same mode.
     from collections import defaultdict
     per_q = defaultdict(list)
     for i in free:
@@ -403,10 +334,6 @@ def routing_metrics(batch) -> dict:
         out["routing/unanimous_group_ratio"] = unanimous / len(ents)
         out["routing/groups_scored"] = len(ents)
 
-    # ---- 3. how many groups can teach mode SELECTION ----------------------
-    # A group only says something about which mode is better when it contains
-    # more than one mode AND their rewards differ. Everything else teaches
-    # execution quality, or nothing at all.
     rewards = _column(batch, "reward")
     if rewards is None:
         scores = getattr(batch, "batch", {}).get("token_level_scores")
@@ -429,7 +356,6 @@ def routing_metrics(batch) -> dict:
     if tot:
         for k, v in kinds.items():
             out[f"routing/group_kind/{k}"] = v / tot
-        # the only bucket whose gradient is about WHICH mode to pick
         out["routing/mode_selection_signal"] = kinds["multi_mode_split"] / tot
     return out
 
@@ -451,14 +377,7 @@ def exec_metrics(batch) -> dict:
 
 
 def push_run_provenance():
-    """Stamp the W&B run's config with what verl does not put there itself.
-
-    verl logs its own resolved config (so K, batch size, temperature, top_p and
-    every router.* flag are already there); what is missing is the provenance
-    that makes the run reproducible after the fact -- the commit, the exact
-    checkpoint the weights came from, the dataset hash, and a plain statement of
-    the reward definition. Pushed once, from the driver, on the first step.
-    """
+    """Stamp the W&B run's config with what verl does not put there itself."""
     keys = ("ROUTEWEAVER_GIT_COMMIT", "ROUTEWEAVER_GIT_BRANCH", "ROUTEWEAVER_INIT_CKPT",
             "ROUTEWEAVER_INIT_GLOBAL_STEP", "ROUTEWEAVER_TRAIN_PARQUET",
             "ROUTEWEAVER_TRAIN_PARQUET_SHA", "ROUTEWEAVER_PROBE_SET",
@@ -481,9 +400,7 @@ def push_run_provenance():
 
 
 def hier_metrics(batch) -> dict:
-    """free/* + hier/* from the comet_grpo estimator (this process) and the
-    actor hook's per-arm pi / support numbers from ROUTEWEAVER_HOOK_METRICS_DIR.
-    Inert unless ROUTEWEAVER_COMET=1."""
+    """Hierarchical-advantage metrics. Inert unless ROUTEWEAVER_COMET=1."""
     if os.environ.get("ROUTEWEAVER_COMET", "0") != "1":
         return {}
     import json
@@ -502,17 +419,7 @@ def hier_metrics(batch) -> dict:
 
 
 def obs_budget_metrics(batch) -> dict:
-    """Observation truncation, overall / by mode / by domain.
-
-    Added with the dynamic observation budget. Before it, the only
-    way to know whether worker text was reaching the router was to re-tokenize
-    a finished dump -- which is how the audit found 36% of eval rows losing
-    observation body (CODE 50%, REASON 82%) while nothing in the metrics stream
-    said so. `obs_truncated_any` is the headline: the fraction of ROWS that
-    lost any observation text at all.
-
-    Inert on a batch with no obs_blocks column, so older loops are unaffected.
-    """
+    """Observation truncation, overall / by mode / by domain."""
     out = {}
     blocks = _column(batch, "obs_blocks")
     if blocks is None:
@@ -530,10 +437,8 @@ def obs_budget_metrics(batch) -> dict:
             return
         nb = sum(float(blocks[i]) for i in idx)
         out[f"{prefix}/rows"] = len(idx)
-        # fraction of ROWS that lost any observation text
         out[f"{prefix}/row_truncated_rate"] = (
             sum(float(any_t[i]) for i in idx) / len(idx))
-        # fraction of OBSERVATIONS truncated; 0 when the slice injected none
         out[f"{prefix}/obs_truncated_rate"] = (
             sum(float(trunc[i]) for i in idx) / nb if nb else 0.0)
         out[f"{prefix}/blocks_mean"] = nb / len(idx)

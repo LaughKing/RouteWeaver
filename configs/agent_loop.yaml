@@ -1,7 +1,3 @@
-# Agent-loop registration. The AgentLoopWorker imports each _target_ and the
-# @register decorator in that module puts the name in verl's registry -- a loop
-# absent from this list is absent at runtime ("Agent loop ... not registered").
-# routeweaver is the only loop RouteWeaver runs: cold start (all
-# forced), the forced->free transition, autonomous routing and evaluation.
+# Agent-loop registration: each _target_ registers its loop with verl.
 - name: routeweaver
   _target_: routeweaver_loop.RouteWeaverAgentLoop

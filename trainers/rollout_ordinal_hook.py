@@ -1,23 +1,4 @@
-"""Group-local rollout ordinal, assigned before the batch is chunked.
-
-WHY NOT verl's `rollout_n`. It is a POSITIONAL counter: get_trajectory_info
-increments it while `index[i-1] == index[i]`, so it is only the within-group
-ordinal when the grouping column happens to change between groups. In practice
-it ran 0..255 across a 256-row batch -- a batch-global counter -- and
-the 4x2 rotation only landed correctly because a group happened to occupy an
-8-aligned contiguous block. Any dataloader shuffle, batch reorder or K change
-would have silently mis-paired the workers.
-
-WHAT THIS DOES INSTEAD. Rows are numbered by their position WITHIN THEIR OWN
-GROUP, where the group is read from the data (`uid`, else
-`(sample_id, forced_mode)` out of extra_info) -- the same key GRPO reduces over.
-The ordinal is attached to non_tensor_batch in AgentLoopManager.generate_sequences,
-BEFORE `prompts.chunk(...)`, exactly like verl's own `priority` column two lines
-above, so it travels with the row through chunking, reordering and concat, and
-every agent loop receives it as an ordinary kwarg.
-
-ZERO verl edits -- installed by a post-import hook in sitecustomize.py.
-"""
+"""Group-local rollout ordinal, assigned before the batch is chunked."""
 import functools
 
 KEY = "routeweaver_group_ordinal"
@@ -54,11 +35,7 @@ def assign_ordinals(prompts) -> bool:
 
 
 def install(module) -> bool:
-    """Wrap AgentLoopManager.generate_sequences, matching its own sync/async
-    nature. verl has both shapes across versions -- wrapping a SYNC method with
-    an `async def` hands every caller a coroutine instead of a DataProto, which
-    is the `'coroutine' object has no attribute 'meta_info'` crash. So the shape
-    is detected rather than assumed."""
+    """Wrap AgentLoopManager.generate_sequences, preserving its sync/async shape."""
     import inspect
     manager = getattr(module, "AgentLoopManager", None)
     if manager is None:

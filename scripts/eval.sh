@@ -19,8 +19,7 @@ source "$HERE/paper_config.sh"
 eval_one() {   # CKPT VAL NAME GPU [COST]
   : "${CKPT:?}" "${VAL:?}" "${NAME:?}" "${GPU:?}"
   VAL=$(realpath "$VAL"); CKPT=$(realpath "$CKPT")
-  # CKPT may be an already-merged HF directory (a Hub snapshot, or an earlier
-  # export) or a training checkpoint, which is FSDP-sharded and merged once.
+  # CKPT: a merged HF directory or an FSDP checkpoint (merged once).
   if [ -f "$CKPT/config.json" ]; then
       HF=${HF:-$CKPT}
   else
@@ -49,7 +48,6 @@ eval_one() {   # CKPT VAL NAME GPU [COST]
       export REWARD_MANAGER_NAME=CostRewardManager
       export REWARD_MANAGER_PATH=$REPO/rewards/cost_reward_manager.py
     fi
-    # the dataset check only validates TRAIN_FILES, which VAL_ONLY never trains on
     exec bash "$REPO/scripts/train_routeweaver.sh"
   ) > "$OUT/eval.out" 2>&1
   rc=$?
@@ -65,8 +63,7 @@ one)
 paper)
   : "${CKPT:?}" "${TAG:?}" "${GPU:?}"
   E=$DATASET_ROOT/eval
-  # A failed set aborts the sweep: a table summarized over a missing dump
-  # would be a table of fewer benchmarks wearing the same name.
+  # A failed set aborts the sweep.
   run() { CKPT=$CKPT VAL=$1 NAME=$2 GPU=$GPU COST=${COST:-0} eval_one || exit $?; }
   run $E/eval_600_free.parquet               eval-$TAG-set600
   run $E/eval_700_free.parquet               eval-$TAG-set700

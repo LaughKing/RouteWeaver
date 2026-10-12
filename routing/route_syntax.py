@@ -1,25 +1,4 @@
-"""Route-family surface syntax for the adaptive-layer agentic grammar.
-
-SAME SEMANTICS AS actions.py, DIFFERENT SKIN. User-confirmed the
-`<action>` block grammar diverged from the single/multi route-grammar family,
-and a small model will later be trained on all modes at once -- a unified token
-pattern trains better. So the agentic action space is re-expressed as:
-
-    <mode>agentic</mode>                          (once, first message)
-    <route model="ID" role="ROLE" refs="n1,n2">instruction</route>
-
-Several <route> tags in one message form ONE LAYER, exactly as several
-<action> blocks did. Parsing produces the SAME action dicts
-({role, model, refs, instruction}), so actions.validate / validate_layer are
-reused verbatim -- the rules live in one place regardless of skin.
-
-Two settings apply to THIS grammar only, so the earlier grammar is
-unaffected:
-  * MAX_WORKERS = 6 (was 5)
-  * after the summarizer's observation, the ROUTER writes its own final
-    <answer>; a row scores correct if EITHER the summarizer's answer or the
-    router's <answer> is correct (both are recorded separately)
-"""
+"""Route-family surface syntax for the adaptive-layer agentic grammar."""
 import re
 
 from actions import VIOLATIONS
@@ -30,7 +9,6 @@ _ROUTE = re.compile(r"<route\b([^>]*)>(.*?)</route>", re.S | re.I)
 _ATTR = re.compile(r"""(model|role|refs)\s*=\s*["']([^"']*)["']""", re.I)
 _MODE = re.compile(r"<mode>\s*(.*?)\s*</mode>", re.S | re.I)
 
-# wording adjusted for the route skin; every code keeps its actions.py meaning
 _SKIN = {
     "action_missing": "your message contained no <route> tag",
     "action_malformed": "a <route> tag was not closed or could not be read",
@@ -169,45 +147,16 @@ write <answer>...</answer>.
 Question: {question}
 """
 
-# v2.1: the v2.0 example was a full mock transcript -- routes,
-# observations and answer inline, single/multi style. Most routers
-# imitated it wholesale on turn 1, fabricating <observation> blocks and
-# answering their own question; every such turn cost a violation cue. The old
-# <action> prompt never did this because its observation syntax appeared under
-# a "you will receive" narration, not inside an imitable conversation. This
-# example now shows only the first MESSAGE and narrates the rest.
 PROMPT_VERSION = "route_v2.1"
 
 
-# The clauses that the static rules only imply. Added ONLY when the dynamic
-# routing-state header is on, because clause 9 refers to it by name; with the
-# header off, build() renders exactly the text it always did.
-#
-# Audit of the six candidate clauses against the existing text:
-#   "routes in one turn are parallel and cannot reference one another"
-#       -> already explicit, Global grammar bullet 2. Not repeated.
-#   "a summarizer must be the only route in its layer"
-#       -> already explicit, Rule 5. Not repeated.
-#   "exactly one layer per turn"      -> only implied  -> clause 8
-#   "refs must come from Valid refs"  -> new, names the header -> clause 9
-#   "after a layer, stop and wait"    -> only in the example  -> clause 10
 _STATE_RULES = """9. Each message contains exactly one layer.
 10. A route may reference only node IDs listed in Valid refs. When Valid refs is none, every route must use refs="".
 11. After sending a layer, stop and wait for the worker observations."""
 
 
 def routing_state(action_state, max_workers=MAX_WORKERS):
-    """The dynamic header the environment writes before each router action.
-
-    Derived from the SAME action_state dict validate_layer is given, so what it
-    calls a valid ref and what the validator accepts cannot drift. Nodes are
-    appended to that dict only after their layer has actually run, which is what
-    keeps the routes about to be written out of `Valid refs`.
-
-    It reports state and nothing else: no question, no grammar, no worker
-    output, no dataset or reward, no suggestion about which role or shape to
-    use next, and nothing that depends on what the previous action got wrong.
-    """
+    """The dynamic header the environment writes before each router action."""
     nodes = action_state.get("nodes") or []
     layers = action_state.get("layers") or []
     ids = [str(n["id"]) for n in nodes]
@@ -223,38 +172,9 @@ def routing_state(action_state, max_workers=MAX_WORKERS):
 
 def build(question, worker_ids, example_model="qwen3_8b",
           routing_state_rules=False, max_workers=None):
-    """`max_workers=None` keeps the module default, so every existing caller
-    renders byte-for-byte the same text. It exists because rule 1 of the
-    rulebook states the budget as a NUMBER: when the runtime budget is
-    reconfigured (router.max_workers_v2) and this stays pinned to the module
-    constant, the rulebook tells the policy "at most 6" while the validator and
-    the routing-state header both work to 8. That silent disagreement is worse
-    than either budget on its own, so the number follows the configuration."""
+    """Render the rulebook; `max_workers=None` uses the module default."""
     from roles import ROLE_MENU                                 # noqa: PLC0415
-    # DECOUPLED, REAL IDS RESTORED. `second` used to be
-    # drawn from worker_ids, so with a per-query display order the worked example
-    # moved with the candidate order and demo anchoring could not be told apart
-    # from position. The anchors stay FIXED (that decoupling is kept) but they are
-    # real pool members again.
-    #
-    # WHY a PLACEHOLDER id here was wrong: every id demonstrated in a prompt
-    # has to be one the validator accepts, because the policy copies its
-    # examples. With MODEL_ID_A/B in the template the agentic rulebook carried
-    # NO legal complete-route example while telling the policy "Copy exactly
-    # one model ID from this list. Do not invent...", and the agentic grammar
-    # violation rate roughly doubles against the same pool named for real.
     second = "llama31_8b"
-    # ANONYMOUS DIRECTORY. Two changes, both gated:
-    #   * the worked route's anchors become the fixed aliases, so the rulebook's
-    #     only complete worked route names ids that are in the allowed list;
-    #   * agentic renders THE SAME worker catalog single/multi render, from the
-    #     same worker_alias.catalog_block(). Before this, agentic saw the id list
-    #     and no descriptions at all (measured: 0 description lines against 7 for
-    #     single/multi), so "one directory for three modes" was true of the ids
-    #     and false of the descriptions.
-    # Nothing else moves: roles, the global grammar, rules 1-8, the refs
-    # constraints, the worker budget, the summarizer requirement, the termination
-    # rule and the example's task texts are untouched.
     import sys as _sys, os as _os
     _root = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
     if _root not in _sys.path:
@@ -264,7 +184,6 @@ def build(question, worker_ids, example_model="qwen3_8b",
     if _wa.enabled():
         example_model = _wa.EXAMPLE_PRIMARY
         second = _wa.EXAMPLE_SECONDARY
-        # worker_ids is the per-query DISPLAY ORDER, same as prompt_pool gets.
         catalog = "\n" + _wa.catalog_block(worker_ids) + "\n"
     roles = "\n".join(f"  {name}: {desc}" for name, desc in ROLE_MENU.items())
     return TEMPLATE.format(model_list=", ".join(worker_ids), roles=roles,

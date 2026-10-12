@@ -1,21 +1,4 @@
-"""APPS call-based (functional) execution scorer.
-
-APPS's functional format differs from LiveCodeBench's, which is why the LCB
-run_functional cannot grade it (it splits `input` on newlines and json.loads
-each line; APPS stores `inputs[k]` as an already-parsed arg LIST, with string
-args double-JSON-encoded, and `outputs[k]` as a raw value that is sometimes
-list-wrapped). This module implements the APPS decoding:
-
-  * args = [decode_arg(x) for x in inputs[k]]   (splatted into the method)
-  * decode_arg: json.loads a str arg to strip the "..." encoding, else as-is
-  * the callable is Solution().<fn_name> OR a module-level def <fn_name>
-  * flexible_match tolerates list-wrapping and list/tuple equivalence on output
-
-Each candidate is run in a child process (base64 JSON payload -> runner), so a
-model program that hangs or segfaults cannot take the harness down. The SAME
-match function grades the reference solution at build time (build_apps.py) and
-the worker at eval time, so "reference passes" guarantees the row is gradable.
-"""
+"""APPS call-based (functional) execution scorer."""
 import base64
 import json
 import os
@@ -137,7 +120,8 @@ def run_functional_apps(code, tests, func_name,
                         per_test_timeout=DEFAULT_PER_TEST_TIMEOUT,
                         total_timeout=DEFAULT_TOTAL_TIMEOUT):
     """tests: list of {"input": [args...], "output": expected}. Returns
-    {passed, total, failed_at, error}."""
+    {passed, total, failed_at, error}.
+    """
     if not code:
         return {"passed": 0, "total": len(tests), "failed_at": 0, "error": "no_code"}
     payload = base64.b64encode(json.dumps({

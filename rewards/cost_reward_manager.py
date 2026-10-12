@@ -1,26 +1,5 @@
 # Copyright 2026 RouteWeaver.
-"""Two reward components: the task verdict, and an efficiency score.
-
-The task verdict is NOT re-derived here. TaskRewardManager stays the only
-thing that decides correct / terminal_invalid / infra, and `reward_score` keeps
-carrying exactly what it always carried, so a COST_ALPHA=0 run is the baseline
-run. This class only ADDS a second component and the cost evidence behind it:
-
-    r_task                     r_eff
-    -----------------------------------------------
-    +1  final answer correct   S_cost = 1/(1 + C/C_ref)
-     0  legal but wrong        0
-    -1  terminal_invalid       -1
-     0  infra failure          0      (row is gated out of the gradient anyway)
-
-A trajectory whose cost could not be fully measured (a call with no usage, or a
-call to a worker the price table does not know) is flagged `cost_complete=0`
-and given r_eff 0. The advantage estimator drops those rows from cost-enabled
-updates rather than letting an unmeasured trajectory look free.
-
-Cost detail (per call: worker, input, output, USD) goes into the dump so any
-number reported later can be recomputed offline from the same fixed table.
-"""
+"""Two reward components: the task verdict, and an efficiency score."""
 import os
 import sys
 
@@ -43,9 +22,6 @@ class CostRewardManager(TaskRewardManager):
             raise cost_model.CostConfigError(
                 "COST_ALPHA > 0 requires a frozen C_REF; refusing to train "
                 "against a normalizer that does not exist yet")
-        # The alias layer can be re-pointed at a different backend without any
-        # visible change to a run; this is what makes that fatal instead of
-        # silently billing one model's tokens at another's price.
         pool = [w.strip() for w in
                 (os.environ.get("WORKER_IDS") or "").split(",") if w.strip()]
         self._pool = cost_model.verify_pool(pool) if pool else {}

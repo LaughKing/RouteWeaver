@@ -1,13 +1,4 @@
-"""Token positions of the worker id inside a policy-generated turn.
-
-The worker-name span is the only place A_worker may act, so it has to be found
-exactly -- a span off by one token would put the worker gradient on a quote
-character. Char offsets are built by decoding each token id on its own and
-accumulating lengths, then `model="ID"` matches in the turn text are mapped
-back onto those offsets. The recovered substring is returned alongside every
-span so the caller can assert it equals the id it claims to be; the dry-run
-reports any mismatch rather than silently mis-attributing gradient.
-"""
+"""Token positions of the worker id inside a policy-generated turn."""
 import re
 
 _MODEL_ATTR = re.compile(r'model="([^"]*)"')
@@ -25,12 +16,7 @@ def token_char_offsets(tokenizer, token_ids):
 
 
 def worker_spans(tokenizer, token_ids, allowed=None):
-    """-> [(tok_start, tok_end, recovered_id)] for each model="ID" in the turn.
-
-    tok_end is exclusive. A token is in the span if it overlaps the id's char
-    range at all, so a token that merges the id's last character with the
-    closing quote is included rather than dropped.
-    """
+    """-> [(tok_start, tok_end, recovered_id)] for each model="ID" in the turn."""
     if not token_ids:
         return []
     offs, _ = token_char_offsets(tokenizer, token_ids)

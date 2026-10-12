@@ -1,35 +1,9 @@
-"""The four general-purpose roles, and the contract each one is held to.
-
-The question these four are designed around is whether a router given only
-them, and no named topology, will assemble something useful. So there is no
-MathSolver, no Coder, no "consensus" wiring: ensemble / refine / debate /
-verified-consensus are shapes the router may or may not discover, never shapes
-the code offers.
-
-Each role's contract is enforced on the WORKER side, in the payload built here,
-and checked afterwards in the trajectory record:
-
-  planner     splits the problem. Must NOT answer it.
-  executor    does an assigned task, keeps its full derivation, ends with a
-              candidate answer.
-  verifier    audits existing output. PASS, or FAIL plus where/why/how to fix.
-              Must NOT answer.
-  summarizer  reconciles what exists and emits the final answer.
-
-Only summarizer is allowed to be the last node, so only summarizer is asked for
-<answer>. A planner or verifier that emits one has broken its contract, and that
-is recorded rather than silently accepted -- a verifier that answers is doing
-the executor's job and the trajectory is no longer the topology it claims.
-"""
+"""The four general-purpose roles, and the contract each one is held to."""
 
 ROLES = ("planner", "executor", "verifier", "summarizer")
 TERMINAL_ROLE = "summarizer"
 NON_TERMINAL_ROLES = ("planner", "verifier")
 
-# Shared by every role: reasoning is never suppressed. A single "no
-# explanation" line reaches only the modes whose payload carries the question,
-# so it shortens worker replies unevenly across modes -- see worker_client.
-# The only output instruction anywhere is about WHERE the answer goes.
 _REASON = "Reason freely and show your work."
 
 ROLE_BRIEF = {
@@ -59,9 +33,6 @@ ROLE_BRIEF = {
         f"{_REASON} End with <answer>your final answer</answer>."),
 }
 
-# What the ROUTER is told about each role. Kept terse and behavioural: the router
-# picks control flow, so it needs to know what a role is FOR, not how it is
-# prompted.
 ROLE_MENU = {
     "planner": "analyses the problem and splits it into sub-tasks; never answers",
     "executor": "carries out one assigned task and returns a candidate answer",
@@ -71,19 +42,7 @@ ROLE_MENU = {
 
 
 def build_worker_payload(role, raw_question, instruction, refs):
-    """The exact text a worker receives.
-
-    EVERY worker gets the complete original question, whatever its role. The
-    alternative -- passing only the router's paraphrase, as the agentic payload
-    in route_grammar does -- means an agentic solver and a multi worker are
-    never asked the same thing, so a comparison between the two modes partly
-    measures the payload rather than the topology.
-
-    `refs` is an ordered list of (node_id, role, text). Referenced outputs are
-    spliced in by the environment, never copied forward by the router, so a
-    verifier always sees the real upstream text rather than the router's summary
-    of it.
-    """
+    """The exact text a worker receives."""
     parts = [ROLE_BRIEF[role], f"Original question:\n{raw_question.strip()}"]
     if refs:
         blocks = []

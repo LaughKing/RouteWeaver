@@ -1,34 +1,5 @@
 # Copyright 2026 RouteWeaver.
-"""Per-dataset answer scoring for the Router-R1 reward.
-
-WHY THIS EXISTS. Every dataset used to be graded by qa_em.em_check, which is
-plain text normalization: lowercase, drop punctuation, drop articles. That is
-right for short-entity QA and wrong for everything else, and the failure is
-silent -- a CORRECT answer scores 0, the correctness gate in
-compute_final_reward returns 0.0, and if all n rollouts of a prompt land there
-the GRPO group is flat and contributes no gradient at all. Measured against the
-real golds in data/router_v1_main:
-
-    MATH   gold '(1,3)'   -> '(1, 3)' scored 0   (a space)
-                          -> '\\boxed{28}' scored 0
-    GSM8K  gold '135'     -> '135.00' scored 0   (the '.' is punctuation)
-    ARC    gold ['B',...] -> 'The answer is B' scored 0
-
-MATH + GSM8K are 3200 of the 9259 main-train rows, so a third of the corpus
-was being graded by a rule that does not apply to it.
-
-DISPATCH IS BY data_source, EXACTLY. That column already exists in every
-parquet, so nothing has to be rebuilt. Matching is dict lookup on the exact
-string -- no aliases, no substring containment. A data_source nobody registered
-falls back to the QA scorer (the historical behaviour) and says so once in the
-log; it never silently picks the math or ARC scorer, because being graded by
-the wrong scorer is precisely the bug this module exists to fix.
-
-QA PARITY IS A HARD CONSTRAINT. The qa scorer calls the same
-qa_em.extract_solution / em_check / f1_score in the same order with the same
-arguments; qa_em_stance.py is not touched. nq, triviaqa, hotpotqa, 2wiki and
-musique score exactly what they scored before.
-"""
+"""Per-dataset answer scoring for the Router-R1 reward."""
 
 import logging
 import re
@@ -41,14 +12,6 @@ import qa_em_stance as qa_em
 
 logger = logging.getLogger(__name__)
 
-# ---- the symbolic backend -------------------------------------------------
-#
-# verl vendors a mature LaTeX-aware comparator (sympy + pylatexenc, both
-# present in the environment). Reusing it beats copying a symbolic parser in here:
-# it already handles \frac vs a/b, \boxed stripping, sqrt, decimals vs
-# fractions and thousands separators, with its own timeout guard. If it ever
-# becomes unavailable the math scorer degrades to the string/variant path
-# rather than taking the whole reward down with it.
 try:
     from verl.utils.reward_score.prime_math import compute_score as _prime_math_score
     _MATH_BACKEND = "prime_math"
@@ -60,14 +23,13 @@ except Exception:                                    # pragma: no cover
 @dataclass(frozen=True)
 class ScoreResult:
     """What the reward consumes is `score`. The rest is for tests and dumps --
-    none of it becomes a metric key, so the wandb schema cannot drift."""
+    none of it becomes a metric key, so the wandb schema cannot drift.
+    """
 
     score: float
     scorer_name: str
     normalized_prediction: Optional[str] = None
     matched_gold: Optional[str] = None
-    # QA reports em and f1 as separate metric columns; other scorers are binary
-    # and report their own score in both, so the row schema never changes.
     em: float = 0.0
     f1: float = 0.0
     detail: str = ""
@@ -79,32 +41,11 @@ def _golds(gold_targets) -> list:
     return [str(g) for g in gold_targets]
 
 
-# ============================================================== QA (default) ==
-
-# A gold span that is directly negated does not answer the question: "not
-# nominated" is not the answer "nominated". Lexical and fixed -- no semantics,
-# no parsing, the same family of guard as qa_em._stance_match.
 _NEGATORS = frozenset({"not", "no", "never", "neither", "nor", "without"})
 
 
 def _boundary_subem(answer: str, golds):
-    """Which gold appears in the answer as a contiguous TOKEN span, if any.
-
-    WHY THIS EXISTS. Measured on the step-2 canary, 20 of 41 format-valid QA
-    trajectories contained the correct answer and scored 0, because the policy
-    writes "Melissa Sue Anderson played Mary Ingalls on ..." and strict EM
-    wants the whole normalized string to equal the gold. Half the QA training
-    signal was being discarded for verbosity.
-
-    WHY NOT RAW subem_check ALONE. Its containment is a plain substring test,
-    so "six" matches inside "sixty-four", "Paris" inside "Parisian" and "7/20"
-    inside... anything that normalizes to contain "720". It is reused here as
-    the CHEAP PRE-FILTER and for its stance handling -- a contiguous token span
-    is always a substring of the single-spaced normalized text, so a raw miss
-    is a boundary miss too -- and the token check refines what it lets through.
-
-    qa_em_stance.py is not modified: it is golden-fixture-pinned to the original.
-    """
+    """Which gold appears in the answer as a contiguous TOKEN span, if any."""
     if not qa_em.subem_check(answer, golds):
         return None                      # raw containment already says no
 
@@ -115,8 +56,6 @@ def _boundary_subem(answer: str, golds):
         if not span:
             continue
         if len(span) == 1 and span[0] in ("yes", "no"):
-            # stance golds keep the existing protection: the FIRST standalone
-            # yes/no decides, so "I do not know" does not answer "no"
             if qa_em._stance_match(normalized, span[0]):
                 return gold
             continue
@@ -130,17 +69,7 @@ def _boundary_subem(answer: str, golds):
 
 
 def score_qa(response_text: str, gold_targets, reward_metric: str = "em") -> ScoreResult:
-    """Strict EM first; a miss then gets one boundary-aware subEM attempt.
-
-    The strict path is byte-identical to what it always was, so a trajectory
-    that scored 1 before still scores 1 for the same reason. Only the 0s are
-    revisited, and only for answers that contain the gold as a whole token
-    span.
-
-    KNOWN LIMIT, accepted deliberately: gold "Paris" matches "Paris, Texas".
-    Ruling that out needs to know which Paris the question meant, which is the
-    semantic matching this scorer refuses to do.
-    """
+    """Strict EM first; a miss then gets one boundary-aware subEM attempt."""
     golds = _golds(gold_targets)
     answer = qa_em.extract_solution(solution_str=response_text)
     if answer is None:
@@ -163,11 +92,8 @@ def score_qa(response_text: str, gold_targets, reward_metric: str = "em") -> Sco
                        em, f1, detail if matched is not None else "no match")
 
 
-# ===================================================================== GSM8K ==
-
 _BOXED = re.compile(r"\\boxed\s*\{([^{}]*(?:\{[^{}]*\}[^{}]*)*)\}")
 _ANSWER_IS = re.compile(r"(?:answer|result)\s*(?:is|:|=)\s*", re.IGNORECASE)
-# a signed number with optional thousands separators, decimals, or a/b
 _NUMBER = re.compile(r"[-+]?\$?\s*\d[\d,]*(?:\.\d+)?(?:\s*/\s*\d[\d,]*(?:\.\d+)?)?\s*%?")
 _UNIT_TAIL = re.compile(r"^\s*[a-zA-Z°\u00b0]*\s*$")
 
@@ -176,13 +102,7 @@ _THOUSANDS = re.compile(r"^-?\d{1,3}(?:,\d{3})+$")
 
 
 def _strip_commas(raw: str) -> Optional[str]:
-    """Remove thousands separators, but ONLY from a properly grouped number.
-
-    '1,234' is 1234. '1,35' is not 135 -- in much of the world it is 1.35, and
-    the old text path silently turned it into 135 because a comma is just
-    punctuation to it. An ambiguous literal must not be credited, so this
-    returns None and the answer scores 0 rather than guessing.
-    """
+    """Remove thousands separators, but ONLY from a properly grouped number."""
     if "," not in raw:
         return raw
     head = raw.split(".")[0]
@@ -190,12 +110,7 @@ def _strip_commas(raw: str) -> Optional[str]:
 
 
 def _to_number(text: str) -> Optional[Fraction]:
-    """Exact numeric value of one literal, or None.
-
-    Fraction/Decimal only -- '1/3' must not become 0.333... and then miss an
-    exact gold. A trailing % divides by 100, which makes '20%' and '0.2' the
-    same quantity and keeps '20%' distinct from a gold of '20'.
-    """
+    """Exact numeric value of one literal, or None."""
     raw = text.strip().replace("$", "").replace(" ", "")
     raw = _strip_commas(raw) if raw else raw
     if not raw:
@@ -214,12 +129,7 @@ def _to_number(text: str) -> Optional[Fraction]:
 
 
 def _extract_number(text: str) -> Optional[str]:
-    """Priority: \\boxed{...}, then 'answer is ...', then the LAST literal.
-
-    Last, not first: the answer block may restate the arithmetic before giving
-    the result, and the result is what comes at the end. Intermediate numbers
-    inside <think> never reach here -- only the <answer> body does.
-    """
+    """Priority: \\boxed{...}, then 'answer is ...', then the LAST literal."""
     boxed = _BOXED.findall(text)
     if boxed:
         found = _NUMBER.findall(boxed[-1])
@@ -255,14 +165,11 @@ def score_gsm8k(response_text: str, gold_targets, reward_metric: str = "em") -> 
     return ScoreResult(0.0, "gsm8k", str(value), None, 0.0, 0.0, "numeric mismatch")
 
 
-# ====================================================================== MATH ==
-
 _PERCENT_LATEX = re.compile(r"^(-?[\d.,]+)\s*\\?%$")
 
 
 def _percent_variant(text: str) -> Optional[str]:
-    """'50\\%' -> '1/2'. prime_math treats a percent as a bare number, so this
-    is done here rather than left to score as 50 vs 0.5."""
+    """Convert a percent to a fraction, e.g. '50%' -> '1/2'."""
     match = _PERCENT_LATEX.match(text.strip())
     if match is None:
         return None
@@ -278,19 +185,13 @@ def _math_equal(prediction: str, gold: str) -> bool:
     except Exception as exc:                          # sympy raises broadly
         logger.debug("math backend failed on %r vs %r: %s", prediction, gold, exc)
         return False
-    # prime_math returns (correct, ...) or a bare bool depending on version
     if isinstance(result, tuple):
         return bool(result[0])
     return bool(result)
 
 
 def score_math(response_text: str, gold_targets, reward_metric: str = "em") -> ScoreResult:
-    """Symbolic comparison with a string fallback.
-
-    An unsupported form must come back UNMATCHED, never matched-by-accident:
-    a false positive teaches the router that a wrong answer was fine, which is
-    worse than the missed reward of a false negative.
-    """
+    """Symbolic comparison with a string fallback."""
     golds = _golds(gold_targets)
     answer = qa_em.extract_solution(solution_str=response_text)
     if answer is None:
@@ -314,19 +215,13 @@ def score_math(response_text: str, gold_targets, reward_metric: str = "em") -> S
             for gold_form in gold_forms:
                 if _math_equal(candidate, gold_form):
                     return ScoreResult(1.0, "math", candidate, gold, 1.0, 1.0, _MATH_BACKEND)
-                # last resort: the same normalization the QA path uses, which
-                # still catches identical spellings when the parser bails
                 if qa_em.normalize_answer(candidate) == qa_em.normalize_answer(gold_form) \
                         and qa_em.normalize_answer(candidate):
                     return ScoreResult(1.0, "math", candidate, gold, 1.0, 1.0, "string")
     return ScoreResult(0.0, "math", candidates[0], None, 0.0, 0.0, f"unmatched ({_MATH_BACKEND})")
 
 
-# ============================================================ ARC-Challenge ==
-
 _LETTERS = "ABCDE"
-# a letter only counts in an answer POSITION, never loose in prose -- otherwise
-# "option B is wrong, so A" scores as B
 _LETTER_PATTERNS = (
     re.compile(r"^\s*\(?([A-E])\)?\s*[.):]?\s*$"),                     # 'B'  '(B)'  'B.'
     re.compile(r"(?:answer|option|choice)\s*(?:is|:|=)?\s*\(?([A-E])\)?\b", re.IGNORECASE),
@@ -343,12 +238,7 @@ def _arc_letter(text: str) -> Optional[str]:
 
 
 def score_arc(response_text: str, gold_targets, reward_metric: str = "em") -> ScoreResult:
-    """Gold carries the option LETTER and (usually) the option TEXT.
-
-    Both are checked. When the model supplies both and they disagree, that is
-    scored 0: an answer that says 'C. less dense' when B is 'less dense' has
-    not identified the option, and crediting it would reward the coincidence.
-    """
+    """Gold carries the option LETTER and (usually) the option TEXT."""
     golds = _golds(gold_targets)
     gold_letters = {g.strip().upper() for g in golds if len(g.strip()) == 1
                     and g.strip().upper() in _LETTERS}
@@ -364,7 +254,6 @@ def score_arc(response_text: str, gold_targets, reward_metric: str = "em") -> Sc
     text_hit = next((g for g in gold_texts
                      if qa_em.normalize_answer(g) and qa_em.normalize_answer(g) == normalized),
                     None)
-    # 'B. less dense' -- strip the leading label before comparing the prose
     if text_hit is None and letter is not None:
         stripped = re.sub(r"^\s*\(?[A-E]\)?\s*[.):]\s*", "", answer)
         stripped_norm = qa_em.normalize_answer(stripped)
@@ -386,8 +275,6 @@ def score_arc(response_text: str, gold_targets, reward_metric: str = "em") -> Sc
         return ScoreResult(1.0, "arc", normalized, text_hit, 1.0, 1.0, "option text")
     return ScoreResult(0.0, "arc", normalized, None, 0.0, 0.0, "no option identified")
 
-
-# ================================================================== registry ==
 
 SCORERS = {
     "math_l35": score_math,

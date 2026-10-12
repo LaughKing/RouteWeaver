@@ -1,22 +1,5 @@
 #!/usr/bin/env python
-"""Merge an FSDP2 sharded actor checkpoint into plain HF safetensors.
-
-verl writes model_world_size_N_rank_i.pt holding DTensors: each rank's file has
-every parameter KEY, but each value is that rank's shard of the global tensor.
-A world_size=2 checkpoint therefore cannot be loaded on one GPU -- verl looks
-for model_world_size_1_rank_0.pt and there is none. Merged HF weights carry the
-same parameters with no world size baked in, so they load on any card count.
-
-The merge concatenates each rank's LOCAL shard along the sharded dimension.
-`full_tensor()` looks like the obvious call and is wrong here: it gathers over
-the live process group, and in a 1-process group it returns only that process's
-shard -- silently half the rows. The first attempt did exactly that and wrote an
-embed_tokens of [75968, 2560] against a config asking for [151936, 2560].
-
-Every parameter in this checkpoint is Shard(dim=0) over a 1-D mesh of size 2, so
-torch.cat(locals, dim=0) reconstructs it, and DTensor still carries the global
-shape to assert the result against.
-"""
+"""Merge an FSDP2 sharded actor checkpoint into plain HF safetensors."""
 import argparse, os, shutil, sys
 import torch
 

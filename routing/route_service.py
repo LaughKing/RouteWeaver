@@ -34,11 +34,7 @@ def get_llm_response_via_api(prompt,
                              SEED=42,
                              MAX_TRIALS=500,
                              TIME_GAP=5):
-    '''
-    res = get_llm_response_via_api(prompt='hello')  # Default: TAU Sampling (TAU=1.0)
-    res = get_llm_response_via_api(prompt='hello', TAU=0)  # Greedy Decoding
-    res = get_llm_response_via_api(prompt='hello', TAU=0.5, N=2, SEED=None)  # Return Multiple Responses w/ TAU Sampling
-    '''
+    """Chat completion with retries; returns (text, completion_tokens)."""
     client = get_client(base_url=base_url, api_key=api_key)
     completion = None
     while MAX_TRIALS:
@@ -67,9 +63,6 @@ def get_llm_response_via_api(prompt,
     contents = completion.choices
     meta_info = completion.usage
     completion_tokens = meta_info.completion_tokens
-    # prompt_tokens = meta_info.prompt_tokens
-    # total_tokens = meta_info.total_tokens
-    # print(completion_tokens, prompt_tokens, total_tokens)
     if len(contents) == 1:
         return contents[0].message.content, completion_tokens
     else:
@@ -149,7 +142,6 @@ def check_llm_name(target_llm):
             else:
                 LLM_NAME = "meta/llama-3.1-8b-instruct"
         else:
-            # print("!!!!!!!!!!!LLM Name Error!!!!!!!!!!!", target_llm)
             LLM_NAME = ""
     elif "mistral" in target_llm:
         LLM_NAME = "mistralai/mistral-7b-instruct-v0.3"
@@ -161,7 +153,6 @@ def check_llm_name(target_llm):
         LLM_NAME = "google/gemma-2-27b-it"
         TAU = 0.1
     else:
-        # print("!!!!!!!!!!!LLM Name Error!!!!!!!!!!!", target_llm)
         LLM_NAME = ""
 
     return LLM_NAME, TAU

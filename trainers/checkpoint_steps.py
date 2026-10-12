@@ -1,23 +1,5 @@
 # Copyright 2026 RouteWeaver.
-"""Save checkpoints at an EXPLICIT list of steps instead of a fixed period.
-
-verl offers `trainer.save_freq` only: one period, plus the last step
-(ray_trainer.py -- `is_last_step or global_steps % save_freq == 0`). The RouteWeaver
-baseline is asked for steps 1, 5, 10, 20, 30, 50, 75, 100 -- dense early, sparse
-late, because the interesting part of a collapse is the first ten updates. With
-save_freq=5 that costs 20 checkpoints; a 4B FSDP2 checkpoint (weights +
-optimizer + extra state) is ~30 GB, so the period form would write 600 GB to
-hold 8 wanted steps.
-
-MECHANISM: run with `trainer.save_freq=1` so verl offers to save every step, and
-gate the offer here. `_save_checkpoint` is wrapped, not replaced -- the wanted
-steps go through verl's own save unchanged, so `latest_checkpointed_iteration.txt`
-and therefore `resume_mode=auto` keep working exactly as before.
-
-Enabled only when ROUTEWEAVER_SAVE_STEPS is set (comma separated, e.g.
-"1,5,10,20,30,50,75,100"); absent, this module does nothing at all and every
-other run behaves as it always did.
-"""
+"""Save checkpoints at an EXPLICIT list of steps instead of a fixed period."""
 import os
 
 

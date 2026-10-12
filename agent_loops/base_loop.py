@@ -1,29 +1,5 @@
 # Copyright 2026 RouteWeaver.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-"""Shared turn machinery for the RouteWeaver agent loop.
-
-`UnifiedAgentLoop` (unified_loop.py) drives the episode. What both sides of a
-turn have in common lives here:
-
-- ONE generate() call per turn, stopped at the first action boundary and cut in
-  TOKEN space -- ids and logprobs are cut at the same index and never
-  re-tokenized, because any drift there misaligns the whole trajectory;
-- the observation budget: how much of a worker reply a turn may inject,
-  computed from what is left of the response window rather than from a fixed
-  per-turn allowance;
-- the injection itself: observation tokens enter the next turn's context with
-  response_mask 0 and logprob 0, so the environment's text is never trained on.
-
-THE ENVIRONMENT IS THE ONLY SOURCE OF AN OBSERVATION. Nothing stops the router
-from writing one itself, and when a layer failed validation it was not
-dispatched, so the policy saw its own <layer> with nothing after it and simply
-wrote the reply it expected. The fabricated text never reached a worker --
-refs resolve from dispatch results, not from the transcript -- but it did
-corrupt the trajectory the reward reads. So the opening tag is a hard
-generation boundary: the router is cut off the moment it writes one.
-"""
+"""Shared turn machinery for the RouteWeaver agent loop."""
 
 import logging
 import os
@@ -46,9 +22,6 @@ _CLOSE_ANSWER = close_pattern("answer")
 _OBSERVATION_OPEN = "<observation"
 _OPEN_OBSERVATION = re.compile(r"<observation\b", re.IGNORECASE)
 
-# Sampling stop strings: one action per turn. single/multi stop at a route;
-# agentic stops at a whole LAYER, because a layer legitimately contains several
-# routes and stopping at the first </route> would amputate it.
 _TURN_STOPS = ["</route>", "</answer>", _OBSERVATION_OPEN]
 _MODE_STOPS = ["</mode>", "</answer>", _OBSERVATION_OPEN]
 
@@ -57,8 +30,6 @@ _CLOSE_PATTERNS = {
     "</layer>": _CLOSE_LAYER,
     "</answer>": _CLOSE_ANSWER,
     "</mode>": close_pattern("mode"),
-    # not a closing tag, but the same thing operationally: the point at which
-    # this turn's generation must end.
     _OBSERVATION_OPEN: _OPEN_OBSERVATION,
 }
 
@@ -75,29 +46,14 @@ class RoutingAgentLoopBase(AgentLoopBase):
         super().__init__(*args, **kwargs)
         router_cfg = self.config.get("router", {}) or {}
         self.max_obs_length = router_cfg.get("max_obs_length", 512)
-        # DYNAMIC OBSERVATION BUDGET. max_obs_length alone is a fixed per-turn
-        # allowance, and a fixed allowance throws away worker text while the
-        # response window is nowhere near full -- the trajectory had room the
-        # observation was not allowed to use. The budget is therefore what is
-        # actually left of the response window, capped so one observation
-        # cannot eat the whole trajectory:
-        #
-        #     turn_budget = clamp(response_length - used - reserve, 0, cap)
-        #
-        # `reserve` keeps room for the router's own remaining turns; without it
-        # a long early observation would leave nothing to answer with.
         self.obs_budget_cap = int(router_cfg.get(
             "obs_budget_cap", os.environ.get("ROUTEWEAVER_OBS_BUDGET_CAP", 4096)))
         self.obs_budget_reserve = int(router_cfg.get(
             "obs_budget_reserve", os.environ.get("ROUTEWEAVER_OBS_RESERVE", 1024)))
-        # floor for ONE observation once a wide layer splits the turn budget;
-        # below this an observation is pure wrapper and carries no information
         self.obs_min_per_obs = int(router_cfg.get(
             "obs_min_per_obs", os.environ.get("ROUTEWEAVER_OBS_MIN_PER_OBS", 256)))
-        # share of a truncated body given to the TAIL (see obs_utils._head_tail)
         self.obs_tail_fraction = float(router_cfg.get(
             "obs_tail_fraction", os.environ.get("ROUTEWEAVER_OBS_TAIL_FRACTION", 0.5)))
-        # set False to restore the fixed max_obs_length allowance exactly
         self.obs_budget_dynamic = str(router_cfg.get(
             "obs_budget_dynamic",
             os.environ.get("ROUTEWEAVER_OBS_BUDGET_DYNAMIC", "1"))).lower() not in (
@@ -108,14 +64,7 @@ class RoutingAgentLoopBase(AgentLoopBase):
 
     def _observation_ids(self, obs_text: str, budget: Optional[int] = None,
                          stats: Optional[dict] = None) -> list[int]:
-        """Tokenize one observation to fit ``budget``.
-
-        ``stats``, when given, is a counter dict the caller owns; this method
-        adds to it rather than reading it, so a caller that injects several
-        observations in one turn gets the turn's totals for free. Without them
-        truncation is visible only as a log line, and measuring it after the
-        fact means re-tokenizing a finished dump.
-        """
+        """Tokenize one observation to fit ``budget``."""
         budget = self.max_obs_length if budget is None else budget
         obs_ids, was_truncated, dropped = truncate_observation_ids(
             self.tokenizer, obs_text, budget, self.obs_tail_fraction
@@ -132,12 +81,7 @@ class RoutingAgentLoopBase(AgentLoopBase):
         return obs_ids
 
     def _turn_observation_budget(self, used_response_tokens: int) -> int:
-        """Tokens this TURN's observations may occupy, given what is left.
-
-        Returns 0 when the reserve is already gone -- the caller then injects
-        nothing and the run loop's own length check ends the episode, which is
-        the honest outcome: there is no room for another worker reply.
-        """
+        """Tokens this TURN's observations may occupy, given what is left."""
         if not self.obs_budget_dynamic:
             return self.max_obs_length
         room = self.response_length - used_response_tokens - self.obs_budget_reserve
@@ -145,35 +89,14 @@ class RoutingAgentLoopBase(AgentLoopBase):
 
     def _layer_observation_budget(self, route_count: int,
                                   turn_budget: Optional[int] = None) -> int:
-        """Split the TURN's observation budget across the layer's routes.
-
-        max_obs_length is a per-TURN allowance, not a per-observation one. A
-        layer injects every route's reply in a single turn, so a per-observation
-        cap would let a 3-route layer put 3 x max_obs_length environment tokens
-        into one turn -- with the default 512 that is 1536 tokens against a
-        2048-token response budget, and the router's own text gets squeezed out
-        of the trajectory it is supposed to be learning.
-
-        single/multi inject exactly one observation per turn, so they are
-        unaffected: the share equals max_obs_length.
-        """
+        """Split the TURN's observation budget across the layer's routes."""
         turn_budget = self.max_obs_length if turn_budget is None else turn_budget
         if route_count <= 1:
             return turn_budget
-        # The floor can make route_count x share exceed the turn budget, by at
-        # most (route_count x obs_min_per_obs). That is deliberate and bounded:
-        # obs_budget_reserve is larger than the overrun a legal layer can
-        # produce, and the run loop's response_length check still hard-stops
-        # the episode. An observation cut below the floor is all wrapper.
         share = max(self.obs_min_per_obs, turn_budget // route_count)
         logger.info("layer of %d routes: %d observation tokens each (turn budget %d)",
                     route_count, share, turn_budget)
         return share
-
-
-
-
-    # ------------------------------------------------------------------ turns --
 
 
     async def _generate_turn(
@@ -200,10 +123,6 @@ class RoutingAgentLoopBase(AgentLoopBase):
         response_mask += [1] * len(token_ids)
         if log_probs is not None:
             if not logprobs_seen:
-                # First segment that reports logprobs. If earlier segments did
-                # not, response_logprobs is short by exactly the tokens they
-                # contributed; backfill them or the three lists index-shift and
-                # the alignment assert in run() takes the whole rollout down.
                 response_logprobs += [0.0] * (
                     len(response_ids) - len(token_ids) - len(response_logprobs))
             logprobs_seen = True
@@ -214,20 +133,7 @@ class RoutingAgentLoopBase(AgentLoopBase):
 
 
     def _cut_at_turn_boundary(self, token_ids, log_probs, stops):
-        """Defensive cut after the first closing tag among `stops` — TOKEN-SPACE.
-
-        Cutting in text space and re-tokenizing desyncs tokens from logprobs,
-        which nothing downstream can recover from. Instead: binary
-        search the smallest prefix of TOKENS whose decode contains a closing
-        tag, then cut ids and logprobs at the same index. With stop strings the
-        engine already stops at the boundary, so this only fires on servers
-        (or mocks) that return trailing content.
-
-        Known difference: if one token fuses the closing tag with trailing
-        characters, those characters survive the cut, where a character-space
-        cut would have removed them. No re-tokenization is the deliberate
-        trade.
-        """
+        """Defensive cut after the first closing tag among `stops` — TOKEN-SPACE."""
         text = self.tokenizer.decode(token_ids)
         if not _has_turn_boundary(text, stops):
             return token_ids, log_probs, text
@@ -246,15 +152,11 @@ class RoutingAgentLoopBase(AgentLoopBase):
         self, obs_ids, context, response_ids, response_mask,
         response_logprobs, logprobs_seen,
     ) -> None:
-        """Append environment tokens with mask 0 and logprob 0. The same tokens
-        enter the next turn's context."""
+        """Append environment tokens with mask 0 and logprob 0."""
         context += obs_ids
         response_ids += obs_ids
         response_mask += [0] * len(obs_ids)
         if logprobs_seen:
             response_logprobs += [0.0] * len(obs_ids)
-
-    # ---------------------------------------------------------------- grammar --
-
 
 

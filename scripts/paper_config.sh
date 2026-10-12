@@ -1,10 +1,6 @@
-# Settings shared by every run, sourced by scripts/train.sh and
-# scripts/eval.sh. Per-run settings -- advantage estimator, loss reduction,
-# support term, schedule, resume point -- live in those two scripts.
-# Everything here is the paper's default; see Appendix F.
+# Settings shared by scripts/train.sh and scripts/eval.sh (paper defaults, Appendix F).
 REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 DATA=$REPO/data
-# Built datasets live outside the repo (nothing in datasets/ is tracked).
 DATASET_ROOT=${ROUTEWEAVER_DATASETS:-$REPO/datasets}
 OUTPUTS=${OUTPUTS:-${ROUTEWEAVER_OUTPUTS:-$REPO/outputs}}
 PY=${PY:-python}
@@ -35,9 +31,7 @@ export SUPPORT_LAMBDA0=0.002                   # lambda_b = 0.002 * rho_b, delta
 export ROUTEWEAVER_METRICS=1
 
 # ---- cost model (Appendix E) ------------------------------------------------
-# C_ref is frozen configuration, not a live measurement: the P95 trajectory
-# cost over the calibration rollouts. scripts/train.sh calibration regenerates
-# it; the efficiency reward reads it from this file.
+# C_ref: P95 trajectory cost over the calibration rollouts (scripts/train.sh calibration).
 C_REF_FILE=$REPO/configs/cost_ref.json
 
 TRAIN_PARQUET=$DATASET_ROOT/parquet/routeweaver_train.parquet

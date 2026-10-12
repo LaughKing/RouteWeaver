@@ -1,20 +1,5 @@
 # Copyright 2026 RouteWeaver.
-"""The progressive-exploration schedule, as PURE functions (no verl, no torch).
-
-Shared by the agent loop (which decides forced or free at rollout time) and the
-support hook (which weights its loss by the same thing). One definition, so the
-two cannot disagree.
-
-    rho_b = 1 - (b - FORCED_START_BATCH) / FORCED_ANNEAL_STEPS
-
-A row's mode is forced with probability rho_b, drawn from the sample id alone.
-The draw is per QUERY, not per rollout: a GRPO group holding both forced and
-free rollouts of one query would compare a trajectory whose mode was given
-against one that had to spend a decision on it, and the group baseline would
-absorb the difference as if it were policy quality. Being a hash of the id, it
-is also identical on every worker, reproducible on replay, and unchanged
-across a resume -- none of which a process-local counter would be.
-"""
+"""The progressive-exploration schedule, as PURE functions (no verl, no torch)."""
 import hashlib
 import os
 
@@ -44,14 +29,7 @@ def is_forced(sample_id, alpha):
 
 
 def forced_for_row(extra, start_batch=None, steps=None):
-    """Whether this row's mode is forced. The schedule's only entry point.
-
-    A row carrying an explicit arm label is REFUSED rather than honoured: that
-    layout decides per query how many rows it occupies and needs a matching
-    loss-side mask, and this repository has neither the builder that writes it
-    nor the mask that would neutralize its padding rows. Half-honouring it
-    would roll padding out as ordinary free rows and train on them.
-    """
+    """Whether this row's mode is forced. The schedule's only entry point."""
     if str(extra.get("stage2_arm") or "").strip():
         raise ValueError(
             "extra_info['stage2_arm'] is not supported: the schedule here is "

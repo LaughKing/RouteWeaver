@@ -1,32 +1,10 @@
 # Copyright 2026 RouteWeaver.
-"""Auto-loaded by every Python process that has trainers/ on sys.path (PYTHONPATH).
-
-WHY: in the router-r1-the env, importing verl.workers.engine_workers segfaults
-inside pyarrow's native library when pyarrow is loaded LATE, after the large
-torch/vllm/flash-attn .so pile (deterministic A/B: early `import pyarrow` ->
-clean import; late -> SIGSEGV at pyarrow.lib load. Loading pyarrow first,
-while static TLS / relocation space is plentiful, sidesteps the crash. Ray
-workers inherit this repository's PYTHONPATH via the job runtime_env, so this
-covers the trainer driver, WorkerDict actors,
-AgentLoopWorkers, reward-loop workers and vLLM server processes alike.
-"""
+"""Auto-loaded via PYTHONPATH: imports pyarrow early, then registers RouteWeaver hooks in verl."""
 try:
     import pyarrow  # noqa: F401
 except Exception:  # pragma: no cover — never block interpreter start
     pass
 
-# ---------------------------------------------------------------------------
-# Post-import hook: register this repository's advantage estimators the moment verl's
-# estimator registry module is imported. compute_advantage resolves
-# algorithm.adv_estimator BY NAME in the trainer driver, and nothing in the
-# driver imports these modules on its own -- the reward manager loads in reward
-# workers, the agent loop in rollout workers. Importing grpo_gated eagerly
-# here is not an option either: it pulls verl -> torch into every interpreter
-# that merely has trainers/ on PYTHONPATH (tests are CPU-only and import no verl).
-# So: intercept the first import of verl.trainer.ppo.core_algos, let it
-# complete, then import grpo_gated (whose decorators register into the
-# just-created registry). Idempotent; never blocks interpreter start.
-# ---------------------------------------------------------------------------
 import sys as _sys
 from importlib.abc import Loader as _Loader, MetaPathFinder as _MetaPathFinder
 from importlib.machinery import PathFinder as _PathFinder
@@ -56,7 +34,6 @@ class _CoreAlgosImportHook(_MetaPathFinder):
     def find_spec(self, fullname, path=None, target=None):
         if fullname != _ESTIMATOR_HOST:
             return None
-        # PathFinder only, never the meta path: no re-entry into this hook.
         spec = _PathFinder.find_spec(fullname, path)
         if spec is not None and spec.loader is not None:
             spec.loader = _RegisterEstimatorsAfter(spec.loader)
@@ -65,18 +42,6 @@ class _CoreAlgosImportHook(_MetaPathFinder):
 
 _sys.meta_path.insert(0, _CoreAlgosImportHook())
 
-# ---------------------------------------------------------------------------
-# Second post-import hook, same shape and the same reason: the dispatch gate in
-# grpo_gated needs the per-row `dispatch_failed_calls` column, and verl's
-# registry branch hands a registered estimator only tensors -- non_tensor_batch
-# goes to GDPO and nothing else (ray_trainer.py:258-260). So wrap
-# ray_trainer.compute_advantage, which fit() resolves as a module global at
-# call time, and let it pass the column through. Nothing in verl is edited.
-#
-# Why a hook rather than an import in the launcher: the driver imports
-# ray_trainer through verl.trainer.main_ppo before any of these modules is reachable
-# by name, so there is no earlier moment at which to patch it.
-# ---------------------------------------------------------------------------
 _TRAINER_HOST = "verl.trainer.ppo.ray_trainer"
 
 
@@ -100,10 +65,6 @@ class _InstallDispatchGateAfter(_Loader):
             if comet_grpo.install(module):
                 print("[sitecustomize] hierarchical-advantage wrapper installed on "
                       "ray_trainer.compute_advantage")
-            # Cost-decoupled advantage (ADV_ESTIMATOR=comet_gdpo): hands the
-            # estimator the second reward component. Wraps OUTSIDE comet_grpo so
-            # the segment masks and the clean-row column are still published by
-            # it; at COST_ALPHA=0 the estimator delegates back to comet_grpo.
             import comet_gdpo  # comet_gdpo.py
 
             if comet_gdpo.install(module):
@@ -112,8 +73,6 @@ class _InstallDispatchGateAfter(_Loader):
         except Exception:  # pragma: no cover — the gate must never kill training
             import traceback
             traceback.print_exc()
-        # Same hook, unrelated concern: an explicit checkpoint-step list. Inert
-        # unless ROUTEWEAVER_SAVE_STEPS is set, so no other run is affected.
         try:
             import checkpoint_steps  # checkpoint_steps.py
 
@@ -143,23 +102,6 @@ class _RayTrainerImportHook(_MetaPathFinder):
 _sys.meta_path.insert(0, _RayTrainerImportHook())
 
 
-# ---------------------------------------------------------------------------
-# Third post-import hook, same shape. The minimum-support auxiliary loss needs
-# its forward/backward to land in the SAME optimizer step as GRPO's, and
-# verl's BaseEngine.train_batch is
-#     optimizer_zero_grad -> forward_backward_batch -> optimizer_step
-# with backward only accumulating. So wrap optimizer_step: the auxiliary pass
-# runs immediately before the real step, its gradient adds to the same .grad,
-# and the auxiliary sequences never enter forward_backward_batch -- so they
-# cannot reach the rollout, the advantage, the PPO ratio or loss normalisation.
-#
-# Inert unless ROUTEWEAVER_SUPPORT=1, so every other run is
-# byte-for-byte unaffected.
-# ---------------------------------------------------------------------------
-# Segment-wise loss reduction (ROUTEWEAVER_LOSS_REDUCTION=segment). engine_workers
-# binds `ppo_loss` into its own namespace at import and freezes it into a
-# partial when the worker is built, so the swap must happen right after that
-# module executes.
 _LOSS_HOST = "verl.workers.engine_workers"
 
 
@@ -194,9 +136,6 @@ class _EngineWorkersImportHook(_MetaPathFinder):
 _sys.meta_path.insert(0, _EngineWorkersImportHook())
 
 
-# Fourth post-import hook, same shape. verl computes each rollout's ordinal
-# inside its group but never hands it to the concrete agent loop; the 4x2
-# worker rotation cannot exist without it. Inert unless a loop reads the key.
 _AGENTLOOP_HOST = "verl.experimental.agent_loop.agent_loop"
 
 
@@ -252,8 +191,6 @@ class _InstallSupportHookAfter(_Loader):
             import traceback
             traceback.print_exc()
         try:
-            # publishes the mini-batch-global mode-token count that the segment
-            # reduction uses as its denominator (segment_loss.py)
             import segment_loss
 
             segment_loss.install_engine(module)

@@ -1,25 +1,5 @@
 # Copyright 2026 RouteWeaver.
-"""Hierarchical advantage for FREE prompts inside the existing Stage-2 curriculum.
-
-Registered verl estimator ``comet_grpo``. Forced groups are bit-for-bit the
-``grpo_gated`` path (stock GRPO + zero-variance gate + dispatch gate). A
-FREE group (K rollouts of one prompt, modes sampled by the policy) gets
-
-    mu, sigma        = mean / Bessel std of the group's (clean) rewards
-    A_grpo_i         = (R_i - mu) / (sigma + eps)
-    mu_m             = mean of the rewards of the rollouts that sampled mode m
-    A_mode_i         = (mu_{m_i} - mu) / (sigma + eps)
-    A_inner_i        = (R_i - mu_{m_i}) / (sigma + eps)      => A_mode + A_inner == A_grpo
-
-Token level: response positions [0, mode_span_end_i) (the mode decision,
-retries included) carry A_mode; positions >= mode_span_end_i carry A_inner;
-environment tokens are already response_mask 0. One sigma per group, never a
-per-mode std. A group whose rollouts all sampled one mode has A_mode = 0 and
-A_inner = A_grpo (plain GRPO); a singleton mode has A_inner = 0.
-
-Row metadata (free flag, sampled mode, mode_span_end) is handed over by the
-compute_advantage wrapper below, exactly like the dispatch gate's clean mask.
-"""
+"""Hierarchical advantage for FREE prompts inside the existing Stage-2 curriculum."""
 import json
 import os
 from collections import defaultdict
@@ -31,25 +11,13 @@ import grpo_gated as AE
 from verl.trainer.ppo import core_algos
 
 MODES = ("single", "multi", "agentic")
-# batch column read by segment_loss.py; kept as a literal here so this module
-# (imported the moment core_algos loads) never pulls in the loss module's
-# verl.workers dependencies.
 MODE_TOKEN_MASK_KEY = "mode_token_mask"
-# batch column read by segment_loss.py for the THIRD segment. Same literal-here
-# reasoning as MODE_TOKEN_MASK_KEY.
 WORKER_TOKEN_MASK_KEY = "worker_token_mask"
-# per-row 1/0: 0 == this rollout contained a failed worker call. Published so
-# segment_loss.py can zero EVERY mask for the row, not merely its advantage --
-# with kl_loss_coef=0.001 an advantage of zero still leaves a KL-to-reference
-# gradient on the row, and the requirement is that a provider failure produce
-# no policy gradient at all.
 CLEAN_ROW_KEY = "routeweaver_clean_row"
 
 
 def parse_worker_spans(cell):
-    """'a,b,id;a,b,id' -> [(a, b, id)]. Written by the agent loop, one entry
-    per <route model="ID"> the POLICY generated, token indices into the
-    response. Empty for a row that wrote no route."""
+    """'a,b,id;a,b,id' -> [(a, b, id)] token spans of each generated worker id."""
     out = []
     for part in str(cell or "").split(";"):
         if not part:
@@ -117,13 +85,6 @@ def compute_comet_grpo_advantage(token_level_rewards, response_mask, index,
         if not is_free:
             n_forced_groups += 1
             wk = [info["worker"][i] for i in surv]
-            # WORKER SPLIT (4x2 exploration). Exactly the mode decomposition one
-            # level down: mu_w is the mean over the rollouts that were told to
-            # use w, A_worker = (mu_w - mu)/sigma rides the worker-name tokens
-            # and A_inner = (R - mu_w)/sigma rides everything else, so
-            # A_worker + A_inner == A_grpo identically and the total objective is
-            # unchanged. Needs >= 2 distinct workers in the group; with one
-            # worker mu_w == mu, A_worker == 0 and this reduces to the old path.
             if all(wk) and len(set(wk)) > 1:
                 by_w = defaultdict(list)
                 for i in surv:
@@ -201,7 +162,6 @@ def compute_comet_grpo_advantage(token_level_rewards, response_mask, index,
     }
     for m in MODES:
         stats[f"free/mode_count_{m}"] = mode_count[m]
-    # forced groups must equal the stock estimator when nothing was dropped
     if n_forced_groups and (clean is None or all(clean)):
         stock, _ = core_algos.compute_grpo_outcome_advantage(
             token_level_rewards=token_level_rewards, response_mask=response_mask,
@@ -209,7 +169,6 @@ def compute_comet_grpo_advantage(token_level_rewards, response_mask, index,
         forced_rows = [i for i in range(bsz) if int(free[i]) == 0]
         err = 0.0
         for i in forced_rows:
-            # gated groups are 0 here and ±x in stock only if std < 1e-4 (empty band on {-1,0,1})
             err = max(err, float((adv[i] - stock[i]).abs().max()))
         stats["hier/forced_vs_stock_max_err"] = err
     LAST_STATS.clear(); LAST_STATS.update(stats)
@@ -218,33 +177,13 @@ def compute_comet_grpo_advantage(token_level_rewards, response_mask, index,
 
 
 def publish_mode_token_mask(data, info):
-    """Per-token 1/0 mask marking the MODE-SELECTION tokens of each row, written
-    as a batch tensor so the actor's loss can reduce the two segments
-    separately (segment_loss.py). Free rows: [0, mode_span_end) intersected with
-    response_mask. Forced rows: all zero -- their declaration is environment
-    text (response_mask 0) and their whole response is "inner", i.e. plain GRPO.
-    Inert for the loss unless ROUTEWEAVER_LOSS_REDUCTION=segment; costs one bool
-    tensor either way, and makes the segmentation auditable in the dumps.
-    """
+    """Write the per-token mode-selection mask as a batch column."""
     rm = data.batch["response_mask"]
     pos = torch.arange(rm.shape[1], device=rm.device).unsqueeze(0)
     ends = torch.tensor([int(e) if int(f) == 1 else 0
                          for e, f in zip(info["span_end"], info["free"])],
                         device=rm.device).unsqueeze(1)
     data.batch[MODE_TOKEN_MASK_KEY] = ((pos < ends) & (rm > 0)).to(rm.dtype)
-    # THIRD segment: the worker-name tokens of every route the policy wrote.
-    # Disjoint from the mode mask by construction (a route is always after the
-    # declaration) and intersected with response_mask so environment text can
-    # never enter it.
-    #
-    # FIDELITY GATE. `worker_spans` is written by the agent loop
-    # UNCONDITIONALLY (unified_loop:389), so on this tree the column
-    # exists even with WORKER_EXPLORE=0 -- and with
-    # ROUTEWEAVER_LOSS_REDUCTION=segment that silently gives the worker-name tokens
-    # a third segment with its own denominator and a per-row 1/n_i scale,
-    # a small share of policy tokens. The reported configuration has no such
-    # segment, so this mask stays empty unless worker exploration is actually
-    # on -- which is what builds the spans in the first place.
     wm = torch.zeros_like(rm)
     if os.environ.get("WORKER_EXPLORE", "0") == "1":
         for i, spans in enumerate(info.get("wspans") or []):
@@ -279,8 +218,6 @@ def _info_from_batch(data):
     ws = cols.get("worker_spans")
     return {"free": [1 - int(v) for v in forced], "mode": [str(v) for v in mode],
             "span_end": [int(v) for v in span_end],
-            # both absent on a run without the worker-exploration curriculum,
-            # in which case every forced group takes the unchanged GRPO path
             "clean": clean,
             "worker": ["" for _ in forced] if fw is None else [str(v) for v in fw],
             "wspans": [[] for _ in forced] if ws is None else [parse_worker_spans(v) for v in ws]}

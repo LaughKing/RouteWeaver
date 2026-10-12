@@ -1,20 +1,5 @@
 #!/usr/bin/env python
-"""Freeze C_ref from a calibration rollout's validation dump.
-
-C_ref = P95 of the per-trajectory worker cost over REFERENCE rollouts:
-
-    no infrastructure failure   (infra_failed == 0)
-    complete usage              (cost_complete == 1)
-
-Correct and incorrect trajectories both count -- an expensive wrong answer is
-still an expensive trajectory -- and single-worker rollouts are not privileged
-over multi-worker ones. Nothing is filtered on mode, dataset or reward.
-
-The output is the frozen record -- the value and the price table it was
-computed against -- written next to the dump as cost_ref.json and echoed here.
-Copy it to configs/cost_ref.json to make it the constant every alpha > 0 run
-normalizes by.
-"""
+"""Freeze C_ref from a calibration rollout's validation dump."""
 import json
 import sys
 from collections import Counter

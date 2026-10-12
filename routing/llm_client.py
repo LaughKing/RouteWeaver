@@ -1,20 +1,4 @@
-"""Raw chat-completions client over the same channel stack.
-
-Used for BOTH the router and the workers. RouteDispatcher.dispatch is the wrong
-entry point for either here, for two reasons: it wraps a turn in WORKER_PROMPT,
-and it builds worker payloads from templates that differ by mode (one prepends
-the original question, an agentic role payload does not). One payload shape
-shared by every mode is what makes modes comparable, so payloads are built in
-worker_client.py and sent through here.
-
-WORKER_PROMPT is right for a worker and wrong for a router: the router must see
-its own prompt verbatim. So this client reuses
-the dispatcher's channel config, auth cache, cooldowns, status classification
-and response parsing -- and swaps only the payload: raw ``messages`` in,
-``message.content`` out. Sampling matches the dispatcher's frozen settings
-(temperature 0, seed 42; ``extra_body`` per channel entry, which is where a
-worker's thinking mode is turned off).
-"""
+"""Raw chat-completions client over the same channel stack."""
 import os
 import sys
 import time
@@ -39,7 +23,8 @@ from route_dispatch import (  # noqa: E402
 
 class _SyntheticResponse:
     """A collected SSE stream wearing a non-streaming response's interface,
-    so _parse_response and everything downstream stay byte-identical."""
+    so _parse_response and everything downstream stay byte-identical.
+    """
 
     def __init__(self, status_code, body):
         self.status_code = status_code
@@ -55,19 +40,7 @@ class _SyntheticResponse:
 
 
 def _stream_post(url, headers, payload, timeout):
-    """POST with stream=True and collect the SSE into one response.
-
-    WHY: a provider may sit behind a load balancer that kills any connection
-    with no bytes for about a minute. A non-streaming request whose GENERATION
-    takes longer than that can never succeed, however often it retries -- it
-    returns the balancer's own 504, not the model's answer. With stream=True
-    the first chunk arrives in seconds and keeps the connection alive. The read
-    timeout still applies BETWEEN chunks, so a genuinely hung stream dies at
-    the channel timeout as before.
-
-    Non-200s return the raw response untouched so the status-classification
-    path is unchanged. Mid-stream failures raise requests.RequestException,
-    which the caller already treats as a network error."""
+    """POST with stream=True and collect the SSE into one response."""
     import json as _json
     resp = requests.post(url, headers=headers,
                          json={**payload, "stream": True,
@@ -107,37 +80,22 @@ def _stream_post(url, headers, payload, timeout):
 
 
 class LLMCallError(RuntimeError):
-    """A router turn could not be served by any channel. Unlike a WORKER
-    failure (empty observation, rollout continues) a router failure aborts the
-    sample: there is no trajectory without a router."""
+    """No channel could serve a router turn."""
 
 
 class ChatLLM:
-    """Raw-chat client built on a live RouteDispatcher's channels and auth, so
-    credentials, cooldowns and fallback order are identical to the worker
-    calls the rollout makes."""
+    """Raw-chat client reusing a RouteDispatcher's channels and auth."""
 
     def __init__(self, dispatcher: RouteDispatcher, worker_id: str = "worker_3",
                  default_max_tokens: int = None, max_rounds: int = 6,
                  retry_wait: float = 15.0, total_budget: float = 900.0,
                  sampling: dict = None):
-        # SAMPLING PASSTHROUGH (added for RouteWeaver GRPO). Default None
-        # keeps the payload byte-identical to every existing caller: temperature
-        # REQUEST_TEMPERATURE (0) and seed REQUEST_SEED (42), which is what
-        # every non-training caller runs under. GRPO needs the router sampled
-        # (temperature 0.8 / top_p 0.95) and each of its K rollouts to differ, so
-        # a caller may hand a dict that is merged over those two frozen defaults
-        # -- and only a caller that asks for it gets it.
         self.sampling = dict(sampling or {})
         self.dispatcher = dispatcher
         self.worker_id = worker_id
-        # wait-and-retry policy; see chat()
         self.max_rounds = max_rounds
         self.retry_wait = retry_wait
         self.total_budget = total_budget
-        # The channel entry's max_tokens is sized for a WORKER reply. A router
-        # turn is usually shorter, but on a code benchmark the final <answer>
-        # carries a whole program, so the cap is overridable per run.
         self.default_max_tokens = default_max_tokens
         self.entries = dispatcher._enabled_entries(worker_id)
         if not self.entries:
@@ -145,19 +103,7 @@ class ChatLLM:
 
     def chat(self, messages, tag: str = "", max_tokens: int = None,
              record_role: str = "router_turn", sampling: dict = None):
-        """One router turn, with bounded wait-and-retry.
-
-        A WORKER failure degrades to an empty observation and the rollout goes
-        on; a ROUTER failure has nothing to degrade to and kills the sample.
-        And the cooldowns are written for a channel with somewhere else to
-        go: on a single-key channel one 504 puts it to sleep, after which every
-        concurrent sample fails instantly having made ZERO requests.
-
-        The dispatcher itself never sleeps, deliberately: it runs inside a
-        rollout batch with a wall-clock deadline. This wrapper is used offline,
-        where waiting out a cooldown is strictly better than discarding the
-        sample. Usage from failed attempts accumulates ACROSS rounds, so a
-        retried turn is not billed as if it were free."""
+        """One router turn, with bounded wait-and-retry."""
         started = time.monotonic()
         deadline = started + self.total_budget
         failed = {"failed_input_tokens": 0, "failed_output_tokens": 0,
@@ -179,9 +125,6 @@ class ChatLLM:
             left = deadline - time.monotonic()
             if left <= 0 or round_index == self.max_rounds - 1:
                 break
-            # every channel cooling down (attempts == 0) is precisely the case
-            # waiting fixes; a round that did make requests waits too, longer,
-            # rather than hammering a provider that is already failing
             wait = min(self.retry_wait * (1 if attempts == 0 else 2), left)
             time.sleep(wait)
         raise LLMCallError(
@@ -191,7 +134,8 @@ class ChatLLM:
     def _attempt_round(self, messages, tag, max_tokens, started, failed,
                        record_role="router_turn", sampling=None):
         """One walk over the channel list. Returns (record|None, attempts,
-        errors); the record carries the reply under '_text'."""
+        errors); the record carries the reply under '_text'.
+        """
         d = self.dispatcher
         retry_errors = []
         attempt_count = 0
@@ -209,17 +153,8 @@ class ChatLLM:
                                or entry.get("max_tokens", 1024)),
             }
             payload.update(entry.get("extra_body") or {})
-            # Caller-supplied sampling wins over the frozen defaults AND over the
-            # channel's extra_body, because the whole point of passing it is that
-            # this call must be sampled differently from the reported runs default.
-            # An empty dict leaves the payload exactly as it was.
             payload.update(sampling or {})
             load_failures = 0
-            # Spend cap: a paid channel whose stop file exists is
-            # refused BEFORE the request is sent. The watchdog writes the file
-            # when the key's usage reaches the cap; the call then fails like
-            # an exhausted channel and the row leaves the gradient via the
-            # dispatch gate instead of running up the bill.
             stop_file = channel.get("spend_stop_file")
             if stop_file and os.path.exists(os.path.expanduser(str(stop_file))):
                 retry_errors.append(f"{entry['channel']}: spend cap reached "
@@ -283,10 +218,7 @@ class ChatLLM:
         return None, attempt_count, retry_errors
 
     def probe(self):
-        """One cheap live request before a long run. A channel that has gone
-        unpaid or unavailable mid-run silently poisons everything measured
-        after it, so probing first is the standing rule. Raises LLMCallError if
-        no channel answers."""
+        """Send one cheap request; raise LLMCallError if no channel answers."""
         text, record = self.chat(
             [{"role": "user", "content": "Reply with exactly: pong"}],
             tag="probe", max_tokens=8)

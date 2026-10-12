@@ -1,22 +1,4 @@
-"""The explicit agentic paradigm section.
-
-The compact prompt states each paradigm as one line of notation and gives a
-worked example for ensemble only. Under it, the paradigms a policy gets
-structurally right track how explicitly they were stated: the two mistakes that
-dominate are the role that belongs to a LAYER (refine's second layer written as
-`solver` rather than `critic`, plan's third as `executor`) and the exact route
-count a layer requires.
-
-So this module states the same rules the validator enforces -- no more, no less
--- in the form those failures suggest is missing: exact counts in words, the
-role named per layer, refs spelled out, and one complete legal example per
-paradigm.
-
-Nothing here relaxes anything. PARADIGM_SPECS remains the only definition; the
-text below is GENERATED from it, so the two cannot drift. The examples use
-worker ids from ACTIVE_WORKER_POOL and teach structure only -- no answers to
-anything in the training set.
-"""
+"""The explicit agentic paradigm section."""
 import sys
 from pathlib import Path
 
@@ -26,8 +8,6 @@ sys.path.insert(0, str(REPO))
 from route_grammar import (ACTIVE_WORKER_POOL,  # noqa: E402
                                                PARADIGM_SPECS)
 
-# Neutral illustrative tasks, one per paradigm. They exist to show SHAPE; none
-# of them is a question from any split.
 _SCENARIO = {
     "refine": ("a single draft that then gets criticised and rewritten",
                ["Define a solar eclipse in one sentence.",
@@ -64,26 +44,7 @@ def _refs_phrase(refs_from):
 
 
 def _per_route_refs_warning(paradigm, forced=False):
-    """Spell out that refs are required PER ROUTE, where that is confusable.
-
-    "refs = EVERY route id of layer 1, comma separated, not a subset" was
-    already in the rules, and the worked example already showed both rebutters
-    carrying refs="1-1,1-2". It was not enough: in the forced-debate
-    zero-update, 103 of 103 failures wrote refs="1-1" on the first rebutter and
-    refs="1-2" on the second -- reading the requirement as something the LAYER
-    satisfies collectively rather than something each route must satisfy.
-
-    The confusion is only possible when a layer with SEVERAL routes references
-    a layer that also has several, so the block is emitted from the spec rather
-    than pinned to debate: any future paradigm with that shape gets it too.
-    """
-    # Only when this paradigm is the ONLY one on offer. In the four-paradigm
-    # prompt the block costs ~90 tokens, pushes the explicit template from 2840
-    # past the headroom the longest training question needs, and it moves
-    # prompt_pool_fingerprint(None, "explicit"), which invalidates every
-    # dataset already built against it. Whether the full-space prompt should
-    # carry it is a deliberate decision with its own fingerprint, not a side
-    # effect of changing a forced-paradigm prompt.
+    """Spell out that refs are required PER ROUTE, where that is confusable."""
     if not forced:
         return []
     spec = PARADIGM_SPECS[paradigm]
@@ -135,15 +96,7 @@ def _example(paradigm):
 
 
 def explicit_section(allowed=None) -> str:
-    """The replacement for the compressed '## Paradigms' table.
-
-    `allowed` restricts which paradigms are TAUGHT and permitted, for the
-    forced-acquisition diagnostic. It changes the prompt only: PARADIGM_SPECS
-    stays the single definition, the validator is untouched, and the router
-    still has to emit every layer, id, role, ref and observation itself. A
-    harness that wrote any of those for it would be measuring template filling
-    rather than whether the grammar can be learned.
-    """
+    """The replacement for the compressed '## Paradigms' table."""
     names = [p for p in PARADIGM_SPECS if allowed is None or p in allowed]
     assert names, f"no paradigm left after filtering by {allowed!r}"
     if len(names) == 1:
@@ -169,9 +122,6 @@ def explicit_section(allowed=None) -> str:
         spec = PARADIGM_SPECS[paradigm]
         out.append(f"### {paradigm} -- {len(spec)} layers: {_SCENARIO[paradigm][0]}")
         for n, layer in enumerate(spec, start=1):
-            # "on every route" only where there can BE more than one route; on a
-            # single-route layer it is words the policy has to read every time
-            # and cannot act on.
             every = " on every route" if layer.max_routes > 1 else ""
             out.append(f"  layer {n}: {_count_phrase(layer.min_routes, layer.max_routes)}, "
                        f'role="{layer.role}"{every}, '

@@ -1,33 +1,8 @@
 #!/usr/bin/env bash
 # RouteWeaver training / evaluation entry point (verl 0.8, pip-installed).
 #
-# One launcher for every training arm and for evaluation. The arm is chosen
-# entirely by environment variables, which scripts/train.sh and scripts/eval.sh
-# set explicitly (shared values live in scripts/paper_config.sh). The numeric
-# defaults below are NOT the paper configuration -- go through those scripts.
-#
-# THE CHAIN
-#   parquet (32 queries / batch in domain-quota order, read with shuffle=False,
-#            so extra_info.batch_index IS the training step)
-#     -> Qwen3-4B-Instruct-2507 router (FSDP2 actor + vLLM async rollout)
-#     -> routeweaver agent loop (routeweaver_loop.py):
-#          forced query: <mode>m</mode> injected by the environment    mask 0
-#          free query:   policy writes <mode>m</mode>                    mask 1
-#          then single / multi <route> or the agentic role/refs grammar   mask 1
-#          <observation> from the frozen workers                          mask 0
-#          the router's own <answer>                                      mask 1
-#        forced with probability rho_b = 1-(b-FORCED_START_BATCH)/FORCED_ANNEAL_STEPS
-#        (exploration_schedule.py), one draw per query (Eq. 11)
-#     -> reward: TaskRewardManager (task, {-1,0,+1}) or
-#        CostRewardManager (task + efficiency S_cost, Eq. 5)
-#     -> advantage (registered in sitecustomize.py):
-#          grpo_gated  ordinary GRPO + std gate + dispatch gate  (cold start)
-#          comet_grpo      COMET-GRPO A_mode / A_inner             (Eq. 6)
-#          comet_gdpo      COMET-GRPO per reward component, alpha-mixed (Eq. 7)
-#     -> loss: ROUTEWEAVER_LOSS_REDUCTION=segment -> L_mode/N_mode + L_inner/N_inner
-#        (segment_loss.py, Eq. 9), KL to the frozen base (k3, coef 0.001),
-#        + lambda_b * L_support in the same optimizer step (support_hook.py)
-#
+# Normally launched through scripts/train.sh / scripts/eval.sh, which set
+# the paper configuration (scripts/paper_config.sh).
 # Usage:
 #   bash scripts/train.sh cold                    # go through the dispatcher
 #   DRY_RUN=1 bash scripts/train_routeweaver.sh   # print resolved config only
@@ -42,43 +17,28 @@ DATASET_ROOT=${ROUTEWEAVER_DATASETS:-$REPO/datasets}
 # ---- data / model -----------------------------------------------------------
 TRAIN_FILES=${TRAIN_FILES:-$DATASET_ROOT/parquet/routeweaver_train.parquet}
 VAL_FILES=${VAL_FILES:-$DATASET_ROOT/parquet/val_stub.parquet}
-# THE ROUTER POLICY IS LOCAL WEIGHTS. The workers are frozen and reached over
-# HTTP; they cannot carry a gradient and are never the policy.
+# Router policy: local weights. Workers are frozen HTTP endpoints.
 MODEL_PATH=${MODEL_PATH:-${ROUTER_MODEL:-$HOME/models/Qwen3-4B-Instruct-2507}}
 
 EXPERIMENT_NAME=${EXPERIMENT_NAME:-routeweaver}
 PROJECT_NAME=${PROJECT_NAME:-routeweaver}
 WANDB_GROUP=${WANDB_GROUP:-routeweaver}
 OUTPUT_DIR=${OUTPUT_DIR:-$REPO/outputs/$EXPERIMENT_NAME}
-# one JSONL per launch attempt: verl's FileLogger opens it "wb", so a shared
-# path would erase the earlier half of the curve on every resume.
+# One JSONL per launch attempt.
 VERL_FILE_LOGGER_PATH=${VERL_FILE_LOGGER_PATH:-$OUTPUT_DIR/metrics_$(date +%Y%m%d_%H%M%S).jsonl}
 
 # ---- schedule ---------------------------------------------------------------
 TOTAL_TRAINING_STEPS=${TOTAL_TRAINING_STEPS:-50}
 TOTAL_EPOCHS=${TOTAL_EPOCHS:-1}
-# Explicit step list. verl only knows a period, so save_freq=1 offers every
-# step and checkpoint_steps.py (installed by sitecustomize when
-# ROUTEWEAVER_SAVE_STEPS is set) lets the listed ones through. Roughly 30 GB
-# per checkpoint.
+# Explicit checkpoint step list (enforced by checkpoint_steps.py).
 SAVE_STEPS=${SAVE_STEPS:-10,25,50}
-# true  = an illegal action gets a rules cue and the policy may retry in the
-#         same episode.
-# false = the first illegal action ends the rollout with -1: no cue, no further
-#         router or worker call.
+# true = an illegal action gets a rules cue and a retry; false = it ends the rollout.
 POLICY_VIOLATION_RECOVERY=${POLICY_VIOLATION_RECOVERY:-false}
-# proactive routing-state header before every agentic action (mask 0), plus the
-# three rule clauses that name it. false = no header and no clauses.
+# Routing-state header before every agentic action.
 ROUTING_STATE=${ROUTING_STATE:-true}
 TEST_FREQ=${TEST_FREQ:--1}            # no validation in the baseline
 VAL_BEFORE_TRAIN=${VAL_BEFORE_TRAIN:-False}
-# Zero-update evaluation. VAL_ONLY=True makes verl run _validate() once and then
-# return before the first optimizer step (ray_trainer.py:784), so the weights
-# named by RESUME_FROM_PATH are measured exactly as they are, with no update and
-# no checkpoint written. It only works together with VAL_BEFORE_TRAIN=True --
-# that is the branch val_only returns from -- so an eval caller sets BOTH. The
-# default stays False/False: a training run must not spend a rollout phase
-# validating against the 32-row stub before step 1.
+# Zero-update evaluation: set VAL_ONLY and VAL_BEFORE_TRAIN together.
 VAL_ONLY=${VAL_ONLY:-False}
 RESUME_MODE=${RESUME_MODE:-auto}      # auto within THIS run only; the output dir is separate
 # The agent loop that drives the rollout (the only one registered).
@@ -93,40 +53,22 @@ MAX_CKPT_KEEP=${MAX_CKPT_KEEP:--1}    # -1 = keep every one
 # ---- GRPO -------------------------------------------------------------------
 TRAIN_BATCH_SIZE=${TRAIN_BATCH_SIZE:-32}      # prompts per step
 ROLLOUT_N=${ROLLOUT_N:-8}                     # K per prompt -> 256 trajectories
-# verl multiplies ppo_mini_batch_size by rollout.n in fsdp_workers, so 32 here
-# means one on-policy update over all 256 sequences: ppo_epochs=1, no drift.
+# Scaled by rollout.n in verl: one on-policy update per step.
 PPO_MINI_BATCH_SIZE=${PPO_MINI_BATCH_SIZE:-32}
 MICRO_BATCH_PER_GPU=${MICRO_BATCH_PER_GPU:-1}
 ADV_ESTIMATOR=${ADV_ESTIMATOR:-grpo_gated}
 DATA_SEED=${DATA_SEED:-42}
-# MUST stay False: the parquet's row order IS the 7/7/7/6/5 quota.
+# Must stay False: row order encodes the per-step mode quota.
 DATA_SHUFFLE=${DATA_SHUFFLE:-False}
 
 # ---- lengths ----------------------------------------------------------------
-# Over the training prompts the median is ~280 tokens and the longest is ~5.2k,
-# so 6144 truncates nothing; truncation=error makes a violation loud rather
-# than silent.
 MAX_PROMPT_LENGTH=${MAX_PROMPT_LENGTH:-6144}
-# The response holds the router's turns AND every observation injected into
-# them (mask 0), so an agentic trajectory with several layers needs room for
-# the worker replies as well as for the routing. At 12288 a noticeable share of
-# agentic trajectories ran out mid-episode and ended with no answer at all, so
-# the budget is 16384. Eval inherits this default, so the train and eval
-# budgets stay equal.
+# Covers router turns plus injected observations.
 MAX_RESPONSE_LENGTH=${MAX_RESPONSE_LENGTH:-16384}
 MAX_OBS_LENGTH=${MAX_OBS_LENGTH:-2048}        # per TURN, split across a layer
-# 0.30, not higher: anything larger dies in update_actor with a CUDA OOM.
-# A 12288-token response plus a 5k-token prompt puts ~17.5k tokens through
-# one micro-batch, and at vocab 151936 the fp32 log-softmax over that is ~4.8 GB
-# on its own. USE_FUSED_KERNELS below removes that tensor; this gives the actor
-# back another ~6.5 GB of the card. KV cache at 0.30 is still ~24 GB, far more
-# than 256 concurrent trajectories need at these lengths.
+# 0.30 avoids CUDA OOM in update_actor.
 GPU_MEM_UTIL=${GPU_MEM_UTIL:-0.30}
-# The real fix for the OOM: fused linear + log-softmax, so the full
-# [tokens x 151936] logits tensor is never materialised. Numerically the same
-# log-probs (a fused reduction, not an approximation), and it applies to the
-# actor, the old-logprob pass and the reference pass alike. Qwen3 reaches it
-# through the generic tail of verl's monkey_patch.patch_forward_with_backends.
+# Fused linear + log-softmax: the full logits tensor is never materialised.
 USE_FUSED_KERNELS=${USE_FUSED_KERNELS:-True}
 
 # ---- environment (frozen workers) ------------------------------------------
@@ -136,35 +78,23 @@ WORKER_TEMPERATURE=${WORKER_TEMPERATURE:-0.2}
 WORKER_MAX_TOKENS=${WORKER_MAX_TOKENS:-4096}
 SELECTOR_MAX_TOKENS=${SELECTOR_MAX_TOKENS:-64}
 MAX_WORKERS_V2=${MAX_WORKERS_V2:-6}
-# Keep this low. High concurrency against a rate-limited provider turns a
-# handful of 503s into a flood of empty observations, which is the one thing
-# the environment must never teach the policy. One agent-loop worker process
-# keeps this a GLOBAL bound -- num_workers=2 would silently double it.
+# Global worker concurrency bound; keep low for rate-limited providers.
 DISPATCH_CONCURRENCY=${DISPATCH_CONCURRENCY:-20}
 AGENT_LOOP_WORKERS=${AGENT_LOOP_WORKERS:-1}
 
 # ---- router sampling --------------------------------------------------------
 ROUTER_TEMPERATURE=${ROUTER_TEMPERATURE:-0.8}
 ROUTER_TOP_P=${ROUTER_TOP_P:-0.95}
-# -1 = no top-k. Explicit because the model's own generation_config.json asks
-# for temperature 0.7 / top_p 0.8 / top_k 20; verl passes these three into
-# override_generation_config AND into every request, so the config wins -- but
-# only if it is actually set.
+# -1 = no top-k (overrides the model's generation_config).
 ROUTER_TOP_K=${ROUTER_TOP_K:--1}
 
-# 4 GiB. Ray's default is 30% of node RAM and is pure reservation; what
-# actually crosses the object store is a batch of text prompts and token ids.
+# 4 GiB Ray object store.
 OBJECT_STORE_BYTES=${OBJECT_STORE_BYTES:-4294967296}
-# Minimum FREE host RAM before launching. Below this Ray's OOM monitor kills
-# the workers mid-rollout, which looks like a training bug and is not one. The
-# trainer needs roughly 110 GB resident at this model size: fp32 master params
-# and the offloaded Adam state dominate, and both live on the HOST because
-# param_offload and optimizer_offload are on.
+# Minimum free host RAM before launching.
 MIN_FREE_RAM_GB=${MIN_FREE_RAM_GB:-130}
 CUDA_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1}
 N_GPUS=$(awk -F, '{print NF}' <<< "$CUDA_DEVICES")
-# console for the log file, wandb for the curves, file for a local JSONL of the
-# SAME metric dicts -- so an upload failure costs the dashboard, not the data.
+# Loggers: console, wandb, local JSONL.
 LOGGER=${LOGGER:-'[console,wandb,file]'}
 PY=${PY:-${PY:-python}}
 
@@ -184,8 +114,7 @@ fi
 [ "$DATA_SHUFFLE" = "False" ] || { echo "FATAL: DATA_SHUFFLE must be False -- the parquet row order IS the 7/7/7/6/5 quota" >&2; exit 1; }
 [ "$TRAIN_BATCH_SIZE" = "32" ] || echo "WARN: train_batch_size != 32 breaks the per-batch domain quota"
 
-# The parquet must be the one the V2 selector renders now. A prompt is baked in;
-# if mode_selector changed since the build, the run would train on a stale menu.
+# The parquet must match the current mode_selector prompt.
 "$PY" - "$REPO" "$TRAIN_FILES" "${EXPECT_MODE_QUOTA:-11,11,10}" <<'PYCHECK' || exit 1
 import json, sys
 from pathlib import Path
@@ -215,10 +144,7 @@ for info in frame["extra_info"][:32]:
 want = {"MATH": 7, "CODE": 7, "KNOWLEDGE": 7, "REASON": 6, "RECALL": 5}
 if counts != want:
     sys.exit(f"FATAL: first 32 rows are {counts}, not {want}")
-# EXPECT_MODE_QUOTA is the sorted per-step mode census the dataset must have:
-# "11,11,10" for a balanced three-mode batch, "32" for a single-mode one. It is
-# stated rather than inferred, so a dataset that lost its mode balance by
-# accident still fails loudly.
+# Expected sorted per-step mode counts, e.g. "11,11,10" or "32".
 expect = sorted(int(x) for x in sys.argv[3].split(",") if x)
 if sorted(modes.values()) != expect:
     sys.exit(f"FATAL: first step mode quota {modes}, expected {expect}")
@@ -228,11 +154,7 @@ print(f"dataset check OK: {len(frame)} rows, selector {meta['selector_version']}
 PYCHECK
 
 # ---- the starting weights must be the UNTRAINED base, not a warm checkpoint --
-# A run that silently resumed someone else's checkpoint would answer a
-# different question than the one being asked, and the curve would look fine.
 if [ "${ALLOW_WARM_START:-0}" != "1" ]; then
-  # `|| true`: with set -e and pipefail, ls finding nothing would abort the
-  # launcher silently.
   EXISTING=$(ls -d "$OUTPUT_DIR"/checkpoints/global_step_* 2>/dev/null | head -1 || true)
   if [ -n "$EXISTING" ]; then
     echo "FATAL: $OUTPUT_DIR/checkpoints already holds $EXISTING." >&2
@@ -305,10 +227,7 @@ cat <<BANNER
 ===============================================================================
 BANNER
 
-# ANONYMOUS WORKER DIRECTORY. Printed into THIS run's launch log so the alias ->
-# backend mapping is recorded next to the run it applied to, and never has to be
-# reconstructed from the code at whatever revision it was then. The Router never
-# sees this; it is the backend mapping.
+# Log the alias -> backend mapping for this run.
 if [ "${ROUTEWEAVER_WORKER_ALIAS:-0}" = "1" ]; then
     PYTHONPATH="$REPO/routing:${PYTHONPATH:-}" python3 -c \
         "from worker_alias import mapping_banner; print(mapping_banner())"
@@ -324,10 +243,7 @@ echo $$ > "$PIDFILE"
 trap 'rm -f "$PIDFILE"' EXIT
 
 export CUDA_VISIBLE_DEVICES=$CUDA_DEVICES
-# Every source directory, so sitecustomize (which installs the estimators, the
-# loss and the hooks into verl) is found, along with the agent loop, the reward
-# managers, the action grammar and the judges. The repo root itself is NEVER on
-# the path -- a directory named like an installed package would shadow it.
+# Source directories on PYTHONPATH (the repo root is deliberately excluded).
 export PYTHONPATH=$SRC_DIRS
 export HF_HUB_OFFLINE=1
 export TOKENIZERS_PARALLELISM=true
@@ -335,9 +251,6 @@ export ROUTEWEAVER_SAVE_STEPS=$SAVE_STEPS
 export ROUTEWEAVER_METRICS=1                      # routeweaver/* step metrics hook
 
 # ---- provenance, stamped into the W&B run config on the first step ----------
-# verl already logs its own resolved config (K, batch, temperature, top_p, every
-# router.* flag). These are the things it cannot know: where the weights came
-# from, which commit, which dataset, and what the reward actually means.
 export ROUTEWEAVER_GIT_COMMIT=$(git -C "$REPO" rev-parse --short HEAD 2>/dev/null)
 export ROUTEWEAVER_GIT_BRANCH=$(git -C "$REPO" branch --show-current 2>/dev/null)
 export ROUTEWEAVER_INIT_CKPT="$MODEL_PATH"
@@ -348,7 +261,7 @@ import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],'rb').read()).hexdiges
 " "$TRAIN_FILES" 2>/dev/null)
 export ROUTEWEAVER_PROBE_SET="${PROBE_SET:-}"
 export ROUTEWEAVER_PROBE_SHA="${PROBE_SHA:-}"
-export ROUTEWEAVER_SEED="${SEED:-$DATA_SEED}"   # SEED was never defined; provenance field only (train_metrics)
+export ROUTEWEAVER_SEED="${SEED:-$DATA_SEED}"   # provenance only
 export ROUTEWEAVER_REWARD_DEF="+1 correct | 0 legal-but-wrong | -1 policy grammar/protocol invalid (terminal) | infra failure retried then excluded from the advantage group, never -1"
 export ROUTEWEAVER_ROUTING_STATE="$ROUTING_STATE"
 # ---- minimum-support auxiliary loss (Eq. 12). Inert unless ROUTEWEAVER_SUPPORT=1.
@@ -367,8 +280,6 @@ export ROUTEWEAVER_COMET="${ROUTEWEAVER_COMET:-0}"
 export ROUTEWEAVER_LOSS_REDUCTION="${ROUTEWEAVER_LOSS_REDUCTION:-global}"
 export ROUTEWEAVER_HOOK_METRICS_DIR="${ROUTEWEAVER_HOOK_METRICS_DIR:-$OUTPUT_DIR/hook_metrics}"
 if [ "$ROUTEWEAVER_COMET" = "1" ]; then
-    # comet_gdpo is comet_grpo run per reward component (comet_gdpo.py) and
-    # needs the same row info, so it satisfies this guard too.
     case "$ADV_ESTIMATOR" in
       comet_grpo|comet_gdpo) ;;
       *) echo "FATAL: ROUTEWEAVER_COMET=1 needs ADV_ESTIMATOR=comet_grpo or comet_gdpo" >&2; exit 1;;
@@ -377,13 +288,10 @@ if [ "$ROUTEWEAVER_COMET" = "1" ]; then
     echo "  loss reduction   : $ROUTEWEAVER_LOSS_REDUCTION  (segment = sum(mode)/N_mode + sum(inner)/N_inner, both counts mini-batch-global)"
 fi
 export ROUTEWEAVER_POLICY_VIOLATION_RECOVERY="$POLICY_VIOLATION_RECOVERY"
-# content = score only the mode content tokens in the support term (Eq. 19)
 export ROUTEWEAVER_ROLLOUT_N="$ROLLOUT_N"
-export MODE_SCORE_SPAN="${MODE_SCORE_SPAN:-full}"   # content = score only the mode content tokens (fixes the closing-token artifact)
+export MODE_SCORE_SPAN="${MODE_SCORE_SPAN:-full}"   # content = score only the mode content tokens
 export VERL_FILE_LOGGER_PATH
-# ONE W&B run across every relaunch: a fresh wandb.init per attempt would cut
-# one training curve into as many runs as there were restarts. The id is stored
-# beside the checkpoints on first use, so a resume appends to the same history.
+# One W&B run id across relaunches.
 RUN_ID_FILE=$OUTPUT_DIR/wandb_run_id
 if [ ! -f "$RUN_ID_FILE" ]; then
     echo "${WANDB_RUN_ID:-$EXPERIMENT_NAME}" > "$RUN_ID_FILE"
@@ -425,9 +333,7 @@ set +e
   actor_rollout_ref.actor.kl_loss_type=low_var_kl \
   actor_rollout_ref.actor.fsdp_config.param_offload=True \
   actor_rollout_ref.actor.fsdp_config.optimizer_offload=True \
-  `# The REFERENCE model stays on the GPU. It is forward-only -- no gradients, no` \
-  `# optimizer -- so it costs 4 GB/rank there and saves ~8 GB of host RAM,` \
-  `# which is the binding constraint here.` \
+  `# The reference model stays on the GPU.` \
   actor_rollout_ref.ref.fsdp_config.param_offload=False \
   actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu="$MICRO_BATCH_PER_GPU" \
   actor_rollout_ref.rollout.name=vllm \
@@ -452,9 +358,7 @@ set +e
   algorithm.adv_estimator="$ADV_ESTIMATOR" \
   algorithm.norm_adv_by_std_in_grpo="${NORM_ADV_BY_STD:-True}" \
   algorithm.use_kl_in_reward=False \
-  `# 1, not 2: each reward worker is a full interpreter with torch, transformers` \
-  `# and the code sandbox resident, and host RAM is the binding constraint.` \
-  `# Scoring is ~0.02 s/sample, so one worker is not a bottleneck.` \
+  `# One reward worker (host RAM bound).` \
   reward.num_workers=1 \
   reward.reward_manager.source=importlib \
   reward.reward_manager.name="${REWARD_MANAGER_NAME:-TaskRewardManager}" \
@@ -489,9 +393,7 @@ set +e
   trainer.default_local_dir="$OUTPUT_DIR/checkpoints" \
   trainer.rollout_data_dir="$OUTPUT_DIR/rollout_dump" \
   trainer.validation_data_dir="$OUTPUT_DIR/validation_dump" \
-  `# HOST RAM, not GPU. Ray's object store otherwise reserves up to 30% of node` \
-  `# RAM by itself, which is headroom this job never uses -- what crosses the` \
-  `# store is a batch of 32 text prompts and their token ids.` \
+  `# Cap Ray's object store (host RAM).` \
   +ray_kwargs.ray_init.object_store_memory=$OBJECT_STORE_BYTES \
   +ray_kwargs.ray_init.runtime_env.env_vars.PYTHONPATH="$PYTHONPATH" \
   +ray_kwargs.ray_init.runtime_env.env_vars.HF_HUB_OFFLINE='"1"' \

@@ -1,14 +1,4 @@
-"""Per-benchmark scoring on the EXTRACTED answer, one dispatch for all modes.
-
-Every mode's final answer goes through the same shared extractor upstream
-(extract_answer: <answer> tag -> \\boxed -> last meaningful line), so what
-arrives here is a short answer string. This module maps it onto each
-benchmark's official-style verdict plus normalized EM and token F1.
-
-SimpleQA's official metric is an LLM grader; here `correct` is boundary-aware
-sub-EM (strict for paraphrase), reported as such -- absolute numbers are a lower
-bound, the mode COMPARISON is the measurement. `not_attempted` = empty answer.
-"""
+"""Per-benchmark scoring on the EXTRACTED answer, one dispatch for all modes."""
 import os
 import re
 import sys
@@ -16,18 +6,13 @@ import sys
 from common import HERE, math_scorer
 import qa_em_stance as qa_em          # SQuAD-style normalizer + token F1
 
-# The APPS/LCB sandbox judges are vendored HERE, not imported from elsewhere: a
-# scorer the training reward depends on cannot live outside the repository that
-# trains against it.
 _LCB_DIR = HERE.parent / "evaluation/judges"
 assert (_LCB_DIR / "lcb_scorer.py").exists() and (_LCB_DIR / "apps_scorer.py").exists(), \
     f"code judges missing from {_LCB_DIR}"
 
 
 def _lcb(answer, meta):
-    """LiveCodeBench pass@1: extract the last fenced program from the answer,
-    run it against the row's tests in the evaluation/judges sandbox,
-    all-or-nothing. gold is decorative; the tests in meta are the judge."""
+    """LiveCodeBench pass@1: run the last fenced program against the row's tests."""
     if str(_LCB_DIR) not in sys.path:
         sys.path.insert(0, str(_LCB_DIR))
     from lcb_scorer import score_livecodebench
@@ -39,19 +24,7 @@ def _lcb(answer, meta):
             "tests_total": s.detail.get("total")}
 
 def _stdin_lines_to_text(meta):
-    """APPS stores a stdin case either as one string or as a LIST OF LINES.
-
-    215 of the 343 stdin rows in data use the list form
-    (e.g. input ["2", "HELLO", "HELL"], output ["BJQEI", "BJQE"]). lcb_scorer's
-    stdin runner feeds test["input"] straight into a StringIO, so a list makes
-    the child raise AttributeError -- and that surfaces as sandbox_error, i.e.
-    infra_failed, which would silently drop ~10% of the CODE domain out of the
-    gradient rather than scoring it. Joining on newline is the only reading:
-    the elements ARE the lines.
-
-    The manifest is not touched; this normalises on the way into the sandbox.
-    Rows already carrying strings pass through unchanged.
-    """
+    """APPS stores a stdin case either as one string or as a LIST OF LINES."""
     tests = meta.get("tests") or []
     if not any(isinstance(t.get(k), list) for t in tests for k in ("input", "output")):
         return meta
@@ -65,16 +38,7 @@ def _stdin_lines_to_text(meta):
 
 
 def _apps_functional(answer, meta):
-    """APPS call-based pass@1. Same shape as _lcb, different decoder.
-
-    APPS stores inputs[k] as an already-parsed ARG LIST (string args
-    double-JSON-encoded) and outputs[k] as a raw value that is sometimes
-    list-wrapped; LiveCodeBench's run_functional splits on newlines and
-    json.loads each line, so it cannot grade these. apps_scorer implements the
-    APPS decoding and is the SAME function build_routeweaver_splits used to decide
-    which rows are gradable at all (reference solution must pass), so
-    "gradable at build time" and "graded at train time" cannot disagree.
-    """
+    """APPS call-based pass@1. Same shape as _lcb, different decoder."""
     if str(_LCB_DIR) not in sys.path:
         sys.path.insert(0, str(_LCB_DIR))
     from apps_scorer import run_functional_apps
@@ -145,14 +109,7 @@ def _satbench(answer, gold):
 
 
 def _em_short(answer, gold, containment=False, both_ways=False):
-    """`both_ways` accepts the answer when it is CONTAINED IN a gold string as
-    well as when it contains one -- "Catholic" against gold "catholic church",
-    "Muslim" against "islam". Enabled for qa_subem (PopQA) only, where gold is
-    by construction a list of acceptable surface forms. It must not be turned on
-    elsewhere: against a long gold, a one-word answer that happens to sit inside
-    it would pass. Word boundaries are required in both directions so "red"
-    cannot match "predator".
-    """
+    """Short-answer EM; `both_ways` also accepts an answer contained in a gold."""
     np_ = _norm(answer)
     ok_em = float(any(np_ == _norm(g) for g in gold))
     sub = ok_em
@@ -175,23 +132,7 @@ def _em_short(answer, gold, containment=False, both_ways=False):
 
 
 def _triviaqa(answer, gold):
-    """TriviaQA: alias-aware BINARY exact match. User decisi.
-
-    reward = max over the gold alias list of normalized_exact_match(pred, alias),
-    so it is 0 or 1 and nothing else. Deliberately NOT the containment sub-EM the
-    short-answer scorer uses: containment credits "Paris, Texas" for a gold of
-    "Paris", which is the loophole the earlier EM line was measured hacking.
-    No LLM grader either -- this stays deterministic and offline.
-
-    Normalization is `qa_em_stance.normalize_answer`, the standard SQuAD/TriviaQA
-    one already in the repo (lowercase, strip punctuation, drop a/an/the, collapse
-    whitespace) and applied to the PREDICTION and to every ALIAS identically. It
-    is not extended: a prediction that buries the answer in prose scores 0, which
-    is what binary EM means.
-
-    EM and token F1 are both reported for logging (`em` is the reward bit, `f1`
-    is the standard TriviaQA F1 and is never read by reward.py).
-    """
+    """TriviaQA: binary exact match against any gold alias."""
     pred = qa_em.normalize_answer(str(answer or ""))
     aliases = [str(g) for g in (gold or [])]
     norms = [qa_em.normalize_answer(a) for a in aliases]
@@ -210,20 +151,7 @@ _ANSWER_TAG = re.compile(r"<answer>(.*?)</answer>", re.S)
 
 
 def _code_candidates(text):
-    """The program candidates in ONE piece of final system output.
-
-    Rule (decided, replaces the 08-26 whole-trajectory union):
-
-        1. the body of the LAST <answer>...</answer> in `text`, if any
-        2. the LAST fenced code block in `text`, if any
-        3. ONLY when neither exists: `text` itself (a bare program with no
-           fence and no tag, e.g. an executor reply judged in-loop)
-
-    `text` must be a FINAL output -- the router's last turn, or the terminal
-    summarizer's reply -- never the whole trajectory. A correct program that
-    an executor wrote mid-trajectory and the summarizer failed to carry into
-    its own output earns nothing; see score_final_output.
-    """
+    """The program candidates in ONE piece of final system output."""
     text = str(text or "")
     out = []
     tags = _ANSWER_TAG.findall(text)
@@ -271,11 +199,6 @@ def score(dataset, answer, gold, meta=None):
     if dataset in ("livecodebench", "taco_mm"):
         return _lcb(answer, meta)
 
-    # ---- data evaluator names -------------------------
-    # That manifest keys rows by `terminator_or_evaluator` rather than by
-    # benchmark name, because one dataset (APPS) needs two different judges.
-    # Every branch below reuses a verdict function already defined above; only
-    # apps_functional is new, and it delegates to the prelim sandbox.
     if dataset == "math":                       # math_l2-5
         s = math_scorer.score(answer, gold)
         return {"correct": bool(s["equiv_acc"]), "em": s["em"], "f1": s["f1"],
@@ -285,11 +208,6 @@ def score(dataset, answer, gold, meta=None):
     if dataset == "binary_sat":                 # SATBench
         return _satbench(answer, gold)
     if dataset == "qa_subem":                   # PopQA
-        # ONE direction only: a normalized gold alias
-        # must be contained in the normalized prediction. "diplomat and
-        # statesman" passes gold "diplomat"; "Catholic" FAILS gold "Catholic
-        # Church". The reverse direction was tried and rejected: it credits
-        # a generic answer against a specific gold.
         return _em_short(answer, gold, containment=True, both_ways=False)
     if dataset == "stdin":                      # APPS, stdin-graded
         m = _stdin_lines_to_text(meta)
@@ -299,38 +217,6 @@ def score(dataset, answer, gold, meta=None):
     raise KeyError(dataset)
 
 
-# =========================================================================
-# THE ONE ENTRY POINT for a trajectory verdict.
-#
-# Training reward (reward_manager.py), the zero-update checkpoint
-# eval (same manager under VAL_ONLY), the offline dump rescorer
-# (data/rescore_dump.py) and the single-worker baselines
-# (the baseline harness) all call THIS and nothing else, so
-# the four paths cannot disagree.
-#
-# What counts as "final system output":
-#   router_text     the router's LAST assistant turn -- the one that carries
-#                   its <answer>. Its answer is the last <answer> body; a
-#                   turn with no tag has submitted nothing (the policy's
-#                   contract is the tag, and a last-line fallback on a
-#                   <route> turn would let a sub-task instruction that quotes
-#                   the gold pass RECALL containment).
-#   terminal_reply  the terminal worker reply that IS the system's answer in
-#                   that mode: the summarizer node's reply for agentic, the
-#                   single worker's reply for a worker-only baseline. None
-#                   for single/multi router rollouts. Its answer goes through
-#                   worker_client.extract_answer (<answer> -> \\boxed -> last
-#                   line), the same extractor every baseline table used.
-# What is NOT final output: planner / executor / verifier replies, anything
-# the router observed mid-trajectory. A program that passed the hidden tests
-# inside an executor node and never reached the summarizer's reply or the
-# router's <answer> is not credited.
-#
-# CODE: candidates = union of _code_candidates over the final outputs
-# (router turn first, then terminal reply); the first that passes its real
-# test payload wins. Every other domain: each final output's extracted answer
-# is judged; correct if any passes.
-# =========================================================================
 CODE_DATASETS = ("stdin", "apps_functional", "livecodebench", "taco_mm")
 
 
@@ -345,17 +231,14 @@ def _reply_answer(reply):
     return ans
 
 
-# CODE scoring policy: "union" also credits a
-# correct program found in any WORKER reply the router actually called
-# (worker_replies), after the router's own final turn and the summarizer.
-# "strict" (08-27..08-30) judged only the router's final turn + summarizer.
 CODE_SCORER = os.environ.get("ROUTEWEAVER_CODE_SCORER", "union")
 
 
 def score_final_output(dataset, gold, meta=None, router_text=None,
                        terminal_reply=None, worker_replies=None):
     """Verdict dict for one trajectory. Keys: correct, em, f1, source
-    ("router" | "terminal" | "worker" | ""), router_correct, terminal_correct, detail."""
+    ("router" | "terminal" | "worker" | ""), router_correct, terminal_correct, detail.
+    """
     empty = {"correct": False, "em": 0.0, "f1": 0.0, "source": "",
              "router_correct": False, "terminal_correct": False,
              "detail": "no_final_output"}

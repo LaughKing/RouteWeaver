@@ -1,21 +1,5 @@
 #!/usr/bin/env python
-"""Paper numbers for one evaluated checkpoint, from its validation dumps.
-
-    python evaluation/summarize_paper.py <eval_root> <tag>
-
-Reads <eval_root>/eval-<tag>-{set600,set700,triviaqa120}/ and any
-eval-<tag>-ood-*/ present.
-
-In-distribution (Table 1): nine benchmarks, 1060 questions --
-    Math       MATH L2-5 (set600), Omni-MATH (set700)
-    Code       APPS (set600), LiveCodeBench, TACO (set700)
-    Knowledge  SuperGPQA (set700)
-    Reason     SATBench (set700)
-    Recall     TriviaQA (triviaqa120), SimpleQA-Verified (set700)
-Domain = unweighted mean of its datasets; Avg = unweighted mean of the domains.
-set600 also carries SuperGPQA / SATBench / PopQA rows; they are not part of
-the reported set. Mode shares (Table 2, Fig. 4) are over the same 1060 rows.
-"""
+"""Paper numbers for one evaluated checkpoint, from its validation dumps."""
 import collections
 import glob
 import json

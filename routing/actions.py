@@ -1,46 +1,4 @@
-"""The router's action grammar, and every rule the environment enforces.
-
-One or more actions per turn. Every <action> in a message forms ONE LAYER whose
-members run blind to each other, so a parallel fan-out is expressible:
-
-    <action>
-      <role>executor</role>
-      <model>worker_3</model>
-      <refs>n1,n2</refs>
-      <instruction>...</instruction>
-    </action>
-
-The environment answers with
-
-    <observation id="n3" role="executor">...</observation>
-
-This surface states only role, model, refs and instruction. It names no
-paradigm: the topology is whatever the layers the router writes turn out to be,
-not one of a fixed list it is handed.
-
-RULES, and why each is a rule rather than a hope:
-
-  R1  role must be one of the four
-  R2  model must be a worker id that has an enabled channel -- otherwise the call
-      returns an empty observation and the trajectory silently degrades
-  R3  refs must name nodes that already exist
-  R4  at most MAX_WORKERS worker calls
-  R5  the trajectory must END with summarizer
-  R6  planner and verifier may not be the final node (implied by R5, checked
-      separately so a violation is legible in the record)
-  R7  (retired) the revision-loop count cap. max_workers and
-      max_action_turns already bound how much re-checking fits.
-  R8  the last remaining call must be the summarizer, so R5 stays satisfiable
-  R9  a layer's refs may only name nodes from EARLIER layers. Members of one
-      layer are independent by definition; letting them reference each other
-      would make the layer a chain wearing a layer's name.
-  R10 a summarizer is always a layer of one -- it terminates the trajectory, so
-      there is nothing for a sibling to return into.
-
-A violation is NOT executed. The router is told which rule it broke, by name,
-and re-prompted. A generic "invalid action" at temperature 0 makes the model
-re-emit the same text and burn the turn budget.
-"""
+"""The router's action grammar, and every rule the environment enforces."""
 import re
 
 MAX_WORKERS = 5
@@ -68,11 +26,6 @@ VIOLATIONS = {
     "verifier_needs_refs": "a verifier must reference the output it is auditing",
     "already_finished": "the summarizer has already run; the trajectory is over",
     "layer_exceeds_budget": "that layer would need more calls than remain",
-    # This is the router's commonest instinct -- writing the whole plan as four
-    # consecutive actions -- so the message has to teach the distinction, not just
-    # refuse. Under the one-action grammar the first block was executed and the
-    # rest dropped; under layers that same message is a fan-out whose members
-    # reference each other, which is a chain wearing a layer's name.
     "ref_same_layer": "actions sent in ONE message run AT THE SAME TIME, so they "
                       "cannot reference each other. If you meant them as "
                       "consecutive steps, send only the FIRST one now and the "
@@ -89,14 +42,7 @@ _CUE_TAIL = (" Emit one corrected <action> block. Do not repeat an action you "
 
 
 def violation_cue(codes, state=None, repeated=False, max_workers=MAX_WORKERS):
-    """Name the broken rule, and state the facts needed to fix it.
-
-    Naming the rule is not enough on its own. At temperature 0 the router
-    re-emitted an identical rejected action on every one of 12 turns, because
-    "your refs do not exist" does not say WHICH ids do. So the cue carries the
-    node list -- or its absence -- and on a verbatim repeat it spells out the
-    legal move instead of restating the complaint.
-    """
+    """Name the broken rule, and state the facts needed to fix it."""
     reasons = []
     for code in codes:
         text = VIOLATIONS.get(code)
@@ -126,20 +72,7 @@ def violation_cue(codes, state=None, repeated=False, max_workers=MAX_WORKERS):
 
 
 def parse_actions(text):
-    """([action, ...], [codes]) -- every <action> block in the message is ONE LAYER.
-
-    Several actions in one message run as a parallel layer whose members cannot
-    see each other's output, and that expressiveness is the whole point of this
-    version. The previous grammar read one action per turn, so the router could
-    only build CHAINS -- and the one topology family that has ever shown a
-    positive effect in this project, independent solvers plus an aggregation step,
-    was not expressible at all. The consequence was measurable: 71% of chain-only
-    trajectories collapsed onto a single four-role template, the verifier never
-    once returned FAIL, and the summarizer reproduced its executor's answer
-    verbatim in 12 of 14 cases. A chain of opinions adds no information.
-
-    A layer of one is the ordinary sequential case, so nothing is given up.
-    """
+    """([action, ...], [codes]) -- every <action> block in the message is ONE LAYER."""
     blocks = _ACTION.findall(str(text or ""))
     if not blocks:
         if re.search(r"<action>", str(text or ""), re.I):
@@ -160,9 +93,7 @@ def parse_action(text):
 
 
 def _parse_one(body):
-    """One <action> body -> (action, codes).
-
-    """
+    """One <action> body -> (action, codes)."""
     got = {}
     for name, pattern in _FIELD.items():
         found = pattern.findall(body)
@@ -197,7 +128,6 @@ def validate(action, state, available_models, max_workers=MAX_WORKERS):
     if remaining <= 0:
         errors.append("budget_exhausted")
     elif remaining == 1 and action["role"] != TERMINAL_ROLE:
-        # R8: the summarizer is mandatory, so the last slot is reserved for it.
         errors.append("must_summarize_now")
 
     known = {node["id"] for node in state["nodes"]}
@@ -210,22 +140,7 @@ def validate(action, state, available_models, max_workers=MAX_WORKERS):
         errors.append("summarizer_needs_refs")
     if action["role"] == "verifier" and not action["refs"]:
         errors.append("verifier_needs_refs")
-    # planner_has_refs REMOVED. Its premise -- "the planner runs
-    # first" -- was never enforced by this grammar: nothing orders the roles, so
-    # a planner may legally sit in any layer, and 7 of 39 agentic rejections on
-    # the max_workers=8 run were mid-trajectory planners re-planning off verifier
-    # feedback while referencing only completed nodes. Ref VALIDITY is unchanged:
-    # ref_unknown and ref_same_layer below still reject unknown, future and
-    # same-layer ids for every role, planner included.
 
-    # revision_loop_exceeded REMOVED. Total complexity is bounded by
-    # max_workers (8, last slot reserved for the summarizer) and max_action_turns
-    # (10): a revise cycle costs >=2 calls, so at most 3 can fit before
-    # layer_exceeds_budget / must_summarize_now fires. The separate count cap was
-    # a second bound on an already-bounded quantity and cost 11 of 39 rejections,
-    # all of them structurally sound execute->verify->revise loops with budget to
-    # spare. state["revision_loops"] is still COUNTED and reported; only the cap
-    # is gone.
 
     if action["role"] in NON_TERMINAL_ROLES and remaining == 1:
         errors.append("must_summarize_now")
@@ -244,11 +159,7 @@ def is_revision(action, state):
 
 
 def validate_layer(layer, state, available_models, max_workers=MAX_WORKERS):
-    """Whole-layer rule check. Returns (codes, per_action_codes).
-
-    A layer is accepted or rejected as a unit: executing half a fan-out would
-    give the aggregator a lopsided view that the router never asked for.
-    """
+    """Whole-layer rule check. Returns (codes, per_action_codes)."""
     from roles import TERMINAL_ROLE                             # noqa: PLC0415
     if state["finished"]:
         return ["already_finished"], []
@@ -258,8 +169,6 @@ def validate_layer(layer, state, available_models, max_workers=MAX_WORKERS):
     codes, per = [], []
     for action in layer:
         errs = validate(action, state, available_models, max_workers=max_workers)
-        # budget/terminal rules are layer-level; drop the per-action verdicts that
-        # only make sense for a layer of one and re-derive them below
         errs = [e for e in errs if e not in
                 ("budget_exhausted", "must_summarize_now")]
         per.append(errs)
@@ -271,7 +180,6 @@ def validate_layer(layer, state, available_models, max_workers=MAX_WORKERS):
     if len(layer) > remaining:
         codes.append("layer_exceeds_budget")
     elif not has_terminal and remaining - len(layer) < 1:
-        # R8 in layer form: something must be left for the mandatory summarizer
         codes.append("must_summarize_now")
     if has_terminal and len(layer) > 1:
         codes.append("summarizer_not_alone")

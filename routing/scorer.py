@@ -1,22 +1,4 @@
-"""Three metrics for an open-form math answer, primary first.
-
-equiv_acc  mathematical equivalence, via verl's prime_math. `4.5`, `9/2` and
-           `\frac{9}{2}` are one answer, and on Omni-MATH they occur in all
-           three shapes, so this is THE metric.
-EM         normalised exact match on the answer strings. Secondary and known to
-           be pessimistic for exactly the reason above.
-F1         token-level overlap. Only informative for the answers that are short
-           phrases rather than expressions ("Yes, such a partition is possible").
-
-IMPORT ORDER IS LOAD-BEARING. scorers.py takes its symbolic backend from
-verl.utils.reward_score.prime_math. Two verls are importable: the installed 0.8
-in site-packages, which has prime_math, and REPO/verl, the frozen the original fork, whose
-reward_score package holds only countdown/gsm8k/math/multiply/qa_em. If REPO
-lands on sys.path first, `import verl` resolves to the fork, prime_math raises
-ImportError, and scorers falls back to _MATH_BACKEND = "string_only" SILENTLY --
-which scored `4.5` wrong against a gold of `\frac{9}{2}` for a whole day. The
-assertion below is the tripwire; it must never be downgraded to a warning.
-"""
+"""Three metrics for an open-form math answer, primary first."""
 import re
 import sys
 from pathlib import Path
@@ -42,39 +24,14 @@ assert MATH_BACKEND == "prime_math", (
 if str(REPO) not in sys.path:
     sys.path.append(str(REPO))
 
-# Cosmetic LaTeX that never changes a value. Sign is NOT in here: qa_em's
-# normaliser strips punctuation, minus included, and credited '6' against a gold
-# of '-6' until a guard was added downstream.
-#
-# \( \) and \[ \] earn their place. Workers wrap inline maths in them and the
-# Omni-MATH gold strings do not, so `\(\frac{1}{2}\)` and `\frac{1}{2}` compared
-# unequal: 10 of the 13 rows where equiv_acc was 1 and EM was 0 differed by
-# nothing else, which is 10 points of EM lost to a delimiter. prime_math sees
-# through it; a string comparison has to be told.
 _TRIVIA = re.compile(r"\\left|\\right|\\!|\\,|\\;|\\ |\\\(|\\\)|\\\[|\\\]|\$|\s+")
-# `\%` is NOT cosmetic. Deleting it turns a gold of "80 \%" into "80" while a
-# worker's "80%" keeps its sign, so the two still differ -- the notation has to be
-# unified, not discarded.
 _PERCENT = re.compile(r"\\%")
 _WRAPPERS = [(re.compile(r"^\\boxed\{(.*)\}$", re.S), r"\1"),
              (re.compile(r"^\\text\{(.*)\}$", re.S), r"\1"),
              (re.compile(r"^\((.*)\)$", re.S), r"\1"),
              (re.compile(r"^\{(.*)\}$", re.S), r"\1")]
 
-# Four shapes that recur in worker answers, all of them a right answer written
-# differently rather than a wrong one.
-#
-#   "362,880"      vs "362880"      thousands separators
-#   "-1 + (-1) = -2" vs "-2"        the worker showed the last step
-#   "9/84 = 3/28"  vs "3/28"        same, unreduced then reduced
-#   "\pm 3i"       vs "3i,-3i"      one notation for a two-element set
-#
-# Each is applied to BOTH sides by normalize(), so it can only ever make two
-# spellings of one value agree -- none of them can turn distinct values equal.
-# Thousands separators only collapse between digits, so "1,2" (a pair) survives.
 _THOUSANDS = re.compile(r"(?<=\d),(?=\d\d\d(?!\d))")
-# keep only what follows the last top-level "=", so a shown derivation reduces
-# to its result; guarded to a single trailing step so "x=1,y=2" is untouched.
 _TRAILING_EQ = re.compile(r"^[^=]{1,80}=\s*(.+)$", re.S)
 _PM = re.compile(r"^\\?pm\s*(.+)$", re.S)
 
@@ -123,13 +80,7 @@ def f1(pred, gold):
 
 
 def equivalent(pred, gold):
-    """prime_math equivalence, with a sign guard on the string-only fallback.
-
-    score_math's last resort compares qa_em.normalize_answer(pred) with
-    qa_em.normalize_answer(gold) (scorers.py:319-322). That normaliser drops
-    punctuation, so it treats '-6' and '6' as the same string. Any verdict that
-    came from that branch is re-checked with a normaliser that keeps the sign.
-    """
+    """prime_math equivalence, with a sign guard on the string-only fallback."""
     result = _v1_scorers.score_answer("math_l35", f"<answer>{pred}</answer>",
                                       list(gold))
     em, detail = float(result.em), result.detail
@@ -140,13 +91,6 @@ def equivalent(pred, gold):
     return em, detail
 
 
-# ---- equivalence gaps prime_math leaves open --------------------
-# Measured on the probe set: prime_math accepts "362,880" vs "362880",
-# "(A)" vs "A", "-1 + (-1) = -2" vs "-2", LaTeX delimiters, "\\boxed{}",
-# "5.0" vs "5", "0.5" vs "\\frac12"; it REJECTS an unreduced fraction
-# ("9/84" vs "3/28"), a "\\pm" form against its two-element set, and a
-# multi-answer list in a different order. The three helpers below close
-# exactly those, on top of prime_math, never instead of it.
 from fractions import Fraction as _Fraction
 
 _SIMPLE_FRAC = re.compile(r"^\s*([+-]?\d+)\s*/\s*([+-]?\d+)\s*$")
@@ -173,9 +117,7 @@ def _rational(text):
 
 
 def _split_top(text):
-    """Top-level comma split (depth-aware for () [] {}), for multi-answer
-    lists such as "3i, -3i" or "1/2, 3". A list that is itself wrapped in
-    one pair of brackets -- an ordered tuple "(1,2)" -- is NOT split."""
+    """Depth-aware top-level comma split; a bracketed tuple is not split."""
     s = str(text or "").strip()
     if not s:
         return []
@@ -226,7 +168,8 @@ _ARITH = re.compile(r"^[0-9+\-*/^().\s]+$")
 
 def _arith_value(text):
     """Exact value of a bare arithmetic expression such as "-1 + (-1)" or
-    "3*(4+1)/2"; None for anything that is not one. sympy, rational only."""
+    "3*(4+1)/2"; None for anything that is not one. sympy, rational only.
+    """
     s = normalize(text).replace("^", "**")
     if not _ARITH.match(s) or not re.search(r"[+\-*/]", s):
         return None
@@ -292,10 +235,7 @@ def score(prediction, gold):
 
 
 def answers_agree(a, b):
-    """Do two candidate answers denote the same thing? Used for the A/B
-    agreement gate, so it must be equivalence rather than string identity --
-    otherwise `4.5` and `9/2` count as a disagreement and the verifier is woken
-    up for nothing."""
+    """Whether two candidate answers are equivalent."""
     if not str(a or "").strip() or not str(b or "").strip():
         return False
     if normalize(a) == normalize(b):

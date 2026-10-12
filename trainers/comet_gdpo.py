@@ -1,40 +1,5 @@
 # Copyright 2026 RouteWeaver.
-"""Reward-decoupled hierarchical advantage: ``comet_gdpo``.
-
-The two-level decomposition is exactly `comet_grpo.comet_grpo`'s -- A_mode on the
-mode-decision tokens, A_inner after them, ONE group sigma for both levels. The
-only change is that it is done PER REWARD COMPONENT and the two results are
-mixed afterwards, GDPO-style:
-
-    for d in (task, eff):
-        mu_d, sigma_d  = mean / Bessel std of the group's clean r_d
-        mu_{m,d}       = mean of r_d over the rollouts that sampled mode m
-        A_mode,d  = (mu_{m,d} - mu_d) / (sigma_d + eps)
-        A_inner,d = (r_d - mu_{m,d}) / (sigma_d + eps)
-
-    A_mode  = (1-alpha) A_mode,task  + alpha A_mode,eff
-    A_inner = (1-alpha) A_inner,task + alpha A_inner,eff
-
-and NOTHING is whitened afterwards. Mixing after each component is normalised
-is the whole point: a task reward on {-1,0,1} and an efficiency reward on (0,1]
-have different spreads, and normalising the sum would let the wider one set the
-scale.
-
-alpha = COST_ALPHA, a fixed constant. At alpha == 0 this module does not
-approximate the baseline, it IS the baseline: the call is delegated to
-`comet_grpo.compute_comet_grpo_advantage` unchanged, so the advantages, the gates,
-the masks and the loss denominators are the old ones bit for bit.
-
-ZERO-VARIANCE IS PER COMPONENT. A group where every rollout is correct has no
-task signal, but if the rollouts cost different amounts the efficiency
-component still does -- that group keeps training on cost alone. A group is
-skipped only when BOTH components are flat.
-
-COST-INCOMPLETE ROWS. A trajectory with an unmeasurable call (no usage
-reported, or a worker the price table does not know) would otherwise look
-free. With cost enabled such a row is treated exactly like a dispatch-gated
-one: it leaves the gradient AND both group baselines, and it is counted.
-"""
+"""Reward-decoupled hierarchical advantage: ``comet_gdpo``."""
 import json
 import os
 from collections import defaultdict
@@ -62,7 +27,8 @@ def stash_info(info):
 
 def _group_stats(vals, dev, dt, epsilon):
     """(mean, denom, gated) with verl's conventions: a group of one has mean 0
-    and std 1, and a std below the gate threshold carries no signal."""
+    and std 1, and a std below the gate threshold carries no signal.
+    """
     if len(vals) == 1:
         return (torch.tensor(0.0, device=dev, dtype=dt),
                 torch.tensor(1.0, device=dev, dtype=dt) + epsilon, False)
@@ -81,7 +47,6 @@ def compute_comet_gdpo_advantage(token_level_rewards, response_mask, index,
         raise RuntimeError("comet_gdpo called without row info (wrapper not installed?)")
 
     if alpha == 0.0:
-        # THE BASELINE PATH, not a reimplementation of it.
         comet_grpo.stash_info(info)
         return comet_grpo.compute_comet_grpo_advantage(
             token_level_rewards=token_level_rewards, response_mask=response_mask,
@@ -167,9 +132,6 @@ def compute_comet_gdpo_advantage(token_level_rewards, response_mask, index,
                     m_d = (mu_m[d][modes[i]] - mean) / denom
                     i_d = (r[d][i] - mu_m[d][modes[i]]) / denom
                 else:
-                    # forced: the declaration is environment text (response_mask
-                    # 0) and the whole response is "inner", i.e. plain GRPO on
-                    # this component.
                     m_d = torch.zeros((), device=dev, dtype=dt)
                     i_d = (r[d][i] - mean) / denom
                 a_mode = a_mode + w[d] * m_d
@@ -235,12 +197,7 @@ def _info_from_batch(data):
 
 
 def install(ray_trainer_module) -> bool:
-    """Wrap compute_advantage so comet_gdpo sees the per-row columns.
-
-    Wraps OUTSIDE comet_grpo's own wrapper, which keeps publishing the segment
-    masks and the clean-row column; this one only adds the second reward
-    component to what the estimator can see.
-    """
+    """Wrap compute_advantage so comet_gdpo sees the per-row columns."""
     import functools
     if not enabled():
         return False
