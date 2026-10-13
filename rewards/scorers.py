@@ -1,5 +1,5 @@
 # Copyright 2026 RouteWeaver.
-"""Per-dataset answer scoring for the Router-R1 reward."""
+"""Per-dataset answer scoring for the task reward."""
 
 import logging
 import re
