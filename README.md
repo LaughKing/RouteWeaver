@@ -6,7 +6,7 @@
 
 <p align="center">
   <a href="https://laughking.github.io/RouteWeaver/"><img src="https://img.shields.io/badge/Project_Page-RouteWeaver-3F6FD8?style=for-the-badge&logo=githubpages&logoColor=white" alt="Project page"></a>
-  <a href="#"><img src="https://img.shields.io/badge/arXiv-coming_soon-B31B1B?style=for-the-badge&logo=arxiv&logoColor=white" alt="arXiv: coming soon"></a>
+  <a href="https://arxiv.org/abs/2610.19705"><img src="https://img.shields.io/badge/arXiv-2610.19705-B31B1B?style=for-the-badge&logo=arxiv&logoColor=white" alt="arXiv"></a>
   <a href="https://huggingface.co/collections/e2rea1/routeweaver-6ac89596851c1c7650f72aa4"><img src="https://img.shields.io/badge/HuggingFace-Collection-FFD21E?style=for-the-badge&logo=huggingface&logoColor=FFD21E" alt="HuggingFace collection"></a>
   <a href="https://github.com/LaughKing/RouteWeaver/stargazers"><img src="https://img.shields.io/github/stars/LaughKing/RouteWeaver?style=for-the-badge&color=E6B655&logo=github&logoColor=white" alt="GitHub stars"></a>
   <a href="https://github.com/LaughKing/RouteWeaver/forks"><img src="https://img.shields.io/github/forks/LaughKing/RouteWeaver?style=for-the-badge&color=279A83&logo=git&logoColor=white" alt="GitHub forks"></a>
@@ -28,9 +28,9 @@
 
 ## 📰 News
 
+- **[2026-10]** Paper released on [arXiv](https://arxiv.org/abs/2610.19705).
 - **[2026-10]** Code released, the trained router is on the Hub, and the
-  [project page](https://laughking.github.io/RouteWeaver/) is up. Paper on arXiv
-  coming soon.
+  [project page](https://laughking.github.io/RouteWeaver/) is up.
 
 ## 🧠 Overview
 
@@ -262,13 +262,11 @@ code this work derives from.
 
 ## 📚 Citation
 
-<!-- The arXiv badge above and the eprint id below are the last things to
-     fill in, once the paper is up. -->
 ```bibtex
 @article{routeweaver2026,
   title   = {RouteWeaver: Weaving Mode Selection and Execution into Unified LLM Routing},
   author  = {Wang, Xiaohan and Zhang, Haozhen and Liu, Qingyuan and Feng, Tao and Wang, Wenya},
-  journal = {arXiv preprint arXiv:TODO},
+  journal = {arXiv preprint arXiv:2610.19705},
   year    = {2026}
 }
 ```
